@@ -33,15 +33,27 @@ const tokenCache = new NodeCache({ stdTTL: 3600 }); // 1 hour TTL
 
 // Helper function to make internal API calls
 async function makeInternalAPICall(endpoint, method = 'GET', data = null) {
+  console.log(`\n🔥 MAKE INTERNAL API CALL STARTED`);
+  console.log(`📡 Endpoint: ${endpoint}`);
+  console.log(`🔧 Method: ${method}`);
+  console.log(`📤 Data:`, data ? JSON.stringify(data, null, 2) : 'None');
+  
   try {
+    console.log(`🔐 Getting access token...`);
     const accessToken = await getValidAccessToken();
+    console.log(`🎫 Access token obtained: ${accessToken ? 'YES' : 'NO'}`);
+    
     const tokens = tokenCache.get('quickbooks_tokens');
+    console.log(`💾 Tokens from cache:`, tokens ? 'PRESENT' : 'NOT FOUND');
+    console.log(`🏢 Realm ID:`, tokens?.realmId || 'NOT FOUND');
     
     if (!tokens) {
+      console.log(`❌ Not authenticated with QuickBooks - no tokens found`);
       throw new Error('Not authenticated with QuickBooks');
     }
 
     const baseURL = `${QUICKBOOKS_CONFIG.baseUrl}/v3/company/${tokens.realmId}`;
+    console.log(`🏗️ Base URL: ${baseURL}`);
     
     const config = {
       method,
@@ -52,14 +64,27 @@ async function makeInternalAPICall(endpoint, method = 'GET', data = null) {
       }
     };
 
+    console.log(`🌐 Full URL: ${config.url}`);
+
     if (data && (method === 'POST' || method === 'PUT')) {
       config.data = data;
       config.headers['Content-Type'] = 'application/json';
     }
 
+    console.log(`📤 Request config:`, JSON.stringify(config, null, 2));
+    console.log(`🚀 Making QuickBooks API request...`);
+
     const response = await axios(config);
+    console.log(`✅ Response status: ${response.status}`);
+    console.log(`📋 Response data:`, JSON.stringify(response.data, null, 2));
+    
     return response.data;
   } catch (error) {
+    console.log(`💥 INTERNAL API CALL ERROR:`);
+    console.log(`🔍 Error message:`, error.message);
+    console.log(`🔍 Error response status:`, error.response?.status);
+    console.log(`🔍 Error response data:`, JSON.stringify(error.response?.data, null, 2));
+    
     console.error('Internal API call error:', error.response?.data || error.message);
     throw error;
   }
@@ -485,6 +510,206 @@ const invoiceTools = {
         return {
           success: false,
           error: 'Failed to analyze invoices: ' + error.message
+        };
+      }
+    },
+  }),
+
+  deleteInvoice: tool({
+    description: 'Delete or void one or more invoices by their ID or invoice number. When users say "delete", "remove", "erase" or similar words, PERMANENTLY DELETE the invoice (completely removes from QuickBooks). Only VOID (mark as $0) when specifically asked to "void". Both operations can only be performed on invoices with NO payments applied.',
+    parameters: z.object({
+      invoices: z.array(z.object({
+        id: z.string().optional().describe('The QuickBooks ID of the invoice to delete/void'),
+        number: z.string().optional().describe('The invoice number (DocNumber) to delete/void')
+      })).describe('Array of invoices to delete/void, identified by either ID or number'),
+      operation: z.enum(['delete', 'void']).optional().describe('Whether to permanently DELETE (completely remove) or VOID (mark as $0) the invoice. Defaults to DELETE unless specifically asked to void.'),
+    }),
+    execute: async ({ invoices, operation = 'delete' }) => {
+      console.log('🔥 DELETE/VOID INVOICE TOOL STARTED');
+      console.log('📋 Input invoices array:', JSON.stringify(invoices, null, 2));
+      console.log('🔧 Operation type:', operation.toUpperCase());
+      
+      try {
+        const results = [];
+        
+        for (const invoice of invoices) {
+          console.log(`\n🔍 Processing invoice:`, JSON.stringify(invoice, null, 2));
+          
+          try {
+            let invoiceId = invoice.id;
+            console.log(`📝 Initial invoiceId: ${invoiceId}`);
+            
+            // If only number provided, find the invoice ID
+            if (!invoiceId && invoice.number) {
+              console.log(`🔎 Searching for invoice number: ${invoice.number}`);
+              const query = `SELECT * FROM Invoice WHERE DocNumber = '${invoice.number}' MAXRESULTS 1`;
+              console.log(`📄 Search query: ${query}`);
+              
+              const searchResult = await makeInternalAPICall(`/query?query=${encodeURIComponent(query)}`);
+              console.log(`🔍 Search result:`, JSON.stringify(searchResult, null, 2));
+              
+              const foundInvoice = searchResult.QueryResponse?.Invoice?.[0];
+              console.log(`📋 Found invoice:`, foundInvoice ? `ID ${foundInvoice.Id}` : 'NOT FOUND');
+              
+              if (!foundInvoice) {
+                console.log(`❌ Invoice ${invoice.number} not found in search results`);
+                results.push({
+                  identifier: invoice.number,
+                  success: false,
+                  error: `Invoice number ${invoice.number} not found`
+                });
+                continue;
+              }
+              
+              invoiceId = foundInvoice.Id;
+              console.log(`✅ Resolved invoice ID: ${invoiceId} for number ${invoice.number}`);
+            }
+            
+            if (!invoiceId) {
+              console.log(`❌ No invoice ID available for processing`);
+              results.push({
+                identifier: invoice.number || invoice.id || 'unknown',
+                success: false,
+                error: 'No invoice ID or number provided'
+              });
+              continue;
+            }
+            
+            // Call our Express server endpoint which has proper validation
+            const endpoint = operation === 'delete' 
+              ? `http://localhost:3000/api/invoices/${invoiceId}/permanent-delete`
+              : `http://localhost:3000/api/invoices/${invoiceId}`;
+            
+            console.log(`🚀 Attempting to ${operation} invoice ID: ${invoiceId}`);
+            console.log(`📡 Making DELETE request to: ${endpoint}`);
+            
+            const deleteResponse = await axios.delete(endpoint);
+            console.log(`✅ ${operation.toUpperCase()} successful! Response:`, JSON.stringify(deleteResponse.data, null, 2));
+            
+            results.push({
+              identifier: invoice.number || invoiceId,
+              success: true,
+              message: deleteResponse.data.message || `Invoice ${invoice.number || invoiceId} ${operation === 'delete' ? 'permanently deleted' : 'voided'} successfully`,
+              invoiceId: invoiceId
+            });
+            
+          } catch (error) {
+            console.log(`❌ Error occurred during delete:`, error.message);
+            console.log(`🔍 Error response status:`, error.response?.status);
+            console.log(`🔍 Error response data:`, JSON.stringify(error.response?.data, null, 2));
+            console.log(`🔍 Full error object:`, error);
+            
+            let errorMessage = `Failed to void invoice: ${error.message}`;
+            
+            // Handle specific errors from our Express server endpoint
+            if (error.response?.data?.error) {
+              errorMessage = error.response.data.error;
+              console.log(`📝 Using server error message: ${errorMessage}`);
+              
+              // Add more context for common errors
+              if (errorMessage.includes('Cannot void invoice that has payments applied')) {
+                errorMessage = `Invoice ${invoice.number || invoiceId} cannot be ${operation}d - it has payments applied. Only fully unpaid invoices can be ${operation}d.`;
+                console.log(`📝 Enhanced error message: ${errorMessage}`);
+              } else if (errorMessage.includes('Invoice not found')) {
+                errorMessage = `Invoice ${invoice.number || invoiceId} not found.`;
+                console.log(`📝 Enhanced error message: ${errorMessage}`);
+              }
+            } else if (error.response?.status === 400) {
+              errorMessage = `Invoice ${invoice.number || invoiceId} cannot be ${operation}d due to business rules (may have payments applied).`;
+              console.log(`📝 Status 400 error message: ${errorMessage}`);
+            } else if (error.response?.status === 404) {
+              errorMessage = `Invoice ${invoice.number || invoiceId} not found.`;
+              console.log(`📝 Status 404 error message: ${errorMessage}`);
+            }
+            
+            console.log(`📋 Final error message: ${errorMessage}`);
+            
+            results.push({
+              identifier: invoice.number || invoice.id || 'unknown',
+              success: false,
+              error: errorMessage
+            });
+          }
+        }
+        
+        const successCount = results.filter(r => r.success).length;
+        const failureCount = results.filter(r => !r.success).length;
+        
+        console.log(`\n📊 DELETE TOOL SUMMARY:`);
+        console.log(`✅ Successful: ${successCount}`);
+        console.log(`❌ Failed: ${failureCount}`);
+        console.log(`📋 All results:`, JSON.stringify(results, null, 2));
+        
+        const operationText = operation === 'delete' ? 'deleted' : 'voided';
+        const finalResult = {
+          success: successCount > 0,
+          totalProcessed: results.length,
+          successCount,
+          failureCount,
+          results: results,
+          summary: failureCount === 0 
+            ? `Successfully ${operationText} ${successCount} invoice${successCount !== 1 ? 's' : ''}`
+            : `${operationText.charAt(0).toUpperCase() + operationText.slice(1)} ${successCount} invoices, ${failureCount} failed`
+        };
+        
+        console.log(`🎯 Final tool result:`, JSON.stringify(finalResult, null, 2));
+        return finalResult;
+        
+      } catch (error) {
+        console.log(`💥 FATAL ERROR in deleteInvoice tool:`, error.message);
+        console.log(`🔍 Error stack:`, error.stack);
+        
+        return {
+          success: false,
+          error: 'Failed to process invoice deletion: ' + error.message
+        };
+      }
+    },
+  }),
+
+  openInvoiceSlider: tool({
+    description: 'Open the invoice slider view to display all invoices. Use this when users ask to "show all invoices", "display invoices", or want to see a list/overview of invoices.',
+    parameters: z.object({
+      filter: z.enum(['all', 'paid', 'unpaid', 'overdue']).optional().describe('Optional filter to apply to the invoice view'),
+      limit: z.number().optional().describe('Maximum number of invoices to return (default: 50)')
+    }),
+    execute: async ({ filter = 'all', limit = 50 }) => {
+      try {
+        // Fetch invoice data to display in the slider
+        let query = 'SELECT * FROM Invoice';
+        const conditions = [];
+        
+        // Apply filter conditions
+        if (filter === 'paid') {
+          conditions.push('Balance = 0');
+        } else if (filter === 'unpaid') {
+          conditions.push('Balance > 0');
+        } else if (filter === 'overdue') {
+          conditions.push('Balance > 0 AND DueDate < TODAY()');
+        }
+        
+        if (conditions.length > 0) {
+          query += ' WHERE ' + conditions.join(' AND ');
+        }
+        
+        query += ` ORDER BY DocNumber ASC MAXRESULTS ${limit}`;
+        
+        const result = await makeInternalAPICall(`/query?query=${encodeURIComponent(query)}`);
+        const invoices = result.QueryResponse?.Invoice || [];
+        
+        return {
+          success: true,
+          action: 'openInvoiceSlider',
+          filter: filter,
+          count: invoices.length,
+          invoices: invoices, // Return full invoice data for frontend
+          message: `Showing ${invoices.length} ${filter === 'all' ? '' : filter} invoices in the slider view`
+        };
+        
+      } catch (error) {
+        return {
+          success: false,
+          error: 'Failed to load invoices: ' + error.message
         };
       }
     },
@@ -1063,19 +1288,72 @@ app.post('/api/invoices/:id/void', async (req, res) => {
 
 // ===== INVOICE DELETE OPERATIONS =====
 
-// Delete invoice
+// Delete invoice (actually voids it in QuickBooks)
 app.delete('/api/invoices/:id', async (req, res) => {
+  console.log(`\n🔥 EXPRESS DELETE ENDPOINT CALLED`);
+  console.log(`📝 Invoice ID parameter: ${req.params.id}`);
+  
   try {
+    console.log(`🔐 Getting access token...`);
     const accessToken = await getValidAccessToken();
+    console.log(`🎫 Access token obtained: ${accessToken ? 'YES' : 'NO'}`);
+    
     const tokens = tokenCache.get('quickbooks_tokens');
+    console.log(`💾 Tokens from cache:`, tokens ? 'PRESENT' : 'NOT FOUND');
+    
     const { id } = req.params;
+    console.log(`🔍 Processing invoice ID: ${id}`);
 
-    const response = await axios.post(
-      `${QUICKBOOKS_CONFIG.baseUrl}/v3/company/${tokens.realmId}/invoice`,
+    // First, get the current invoice to retrieve SyncToken
+    console.log(`📡 Making GET request to QuickBooks for invoice ${id}`);
+    console.log(`🌐 URL: ${QUICKBOOKS_CONFIG.baseUrl}/v3/company/${tokens.realmId}/invoice/${id}`);
+    
+    const getResponse = await axios.get(
+      `${QUICKBOOKS_CONFIG.baseUrl}/v3/company/${tokens.realmId}/invoice/${id}`,
+      {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Accept': 'application/json'
+        }
+      }
+    );
+
+    console.log(`📋 Get invoice response status: ${getResponse.status}`);
+    console.log(`📋 Get invoice response data:`, JSON.stringify(getResponse.data, null, 2));
+
+    const invoice = getResponse.data.QueryResponse?.Invoice?.[0] || getResponse.data.Invoice;
+    console.log(`🔍 Found invoice:`, invoice ? `YES (ID: ${invoice.Id})` : 'NO');
+    
+    if (!invoice) {
+      console.log(`❌ Invoice ${id} not found in QuickBooks`);
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
+
+    console.log(`💰 Invoice balance: ${invoice.Balance}, Total: ${invoice.TotalAmt}`);
+    
+    // Check if invoice can be voided
+    if (parseFloat(invoice.Balance || 0) !== parseFloat(invoice.TotalAmt || 0)) {
+      console.log(`❌ Invoice has payments applied - cannot void`);
+      return res.status(400).json({ 
+        error: 'Cannot void invoice that has payments applied. Unpaid balance must equal total amount.',
+        details: {
+          totalAmount: invoice.TotalAmt,
+          balance: invoice.Balance,
+          status: 'partially_paid'
+        }
+      });
+    }
+
+    // Now void the invoice with the SyncToken
+    console.log(`🚀 Attempting to void invoice ${id} with SyncToken: ${invoice.SyncToken}`);
+    console.log(`🌐 Void URL: ${QUICKBOOKS_CONFIG.baseUrl}/v3/company/${tokens.realmId}/invoice?operation=void`);
+    console.log(`📤 Void payload:`, JSON.stringify({ Id: id, SyncToken: invoice.SyncToken }, null, 2));
+    
+    const voidResponse = await axios.post(
+      `${QUICKBOOKS_CONFIG.baseUrl}/v3/company/${tokens.realmId}/invoice?operation=void`,
       {
         Id: id,
-        sparse: true,
-        Void: true
+        SyncToken: invoice.SyncToken
       },
       {
         headers: {
@@ -1086,10 +1364,193 @@ app.delete('/api/invoices/:id', async (req, res) => {
       }
     );
 
-    res.json({ success: true, message: 'Invoice deleted successfully' });
+    console.log(`✅ Void response status: ${voidResponse.status}`);
+    console.log(`✅ Void response data:`, JSON.stringify(voidResponse.data, null, 2));
+
+    console.log('Invoice voided successfully:', {
+      invoiceId: id,
+      docNumber: invoice.DocNumber,
+      syncToken: invoice.SyncToken
+    });
+
+    const successResponse = { 
+      success: true, 
+      message: `Invoice #${invoice.DocNumber} voided successfully`,
+      voidedInvoice: voidResponse.data.QueryResponse?.Invoice?.[0]
+    };
+    
+    console.log(`📤 Sending success response:`, JSON.stringify(successResponse, null, 2));
+    res.json(successResponse);
   } catch (error) {
+    console.log(`💥 EXPRESS DELETE ERROR occurred:`);
+    console.log(`🔍 Error message:`, error.message);
+    console.log(`🔍 Error response status:`, error.response?.status);
+    console.log(`🔍 Error response data:`, JSON.stringify(error.response?.data, null, 2));
+    console.log(`🔍 Full error:`, error);
+    
     console.error('Delete invoice error:', error.response?.data || error.message);
-    res.status(500).json({ error: 'Failed to delete invoice' });
+    
+    // Provide more detailed error information
+    if (error.response?.data?.Fault) {
+      const fault = error.response.data.Fault;
+      const errorDetail = fault.Error?.[0];
+      
+      console.error('QuickBooks Fault Details:', {
+        type: fault.type,
+        code: errorDetail?.code,
+        detail: errorDetail?.Detail,
+        element: errorDetail?.element
+      });
+      
+      const errorResponse = { 
+        error: 'QuickBooks validation error',
+        details: {
+          type: fault.type,
+          code: errorDetail?.code,
+          message: errorDetail?.Detail || 'Unknown validation error',
+          element: errorDetail?.element
+        }
+      };
+      
+      console.log(`📤 Sending error response:`, JSON.stringify(errorResponse, null, 2));
+      return res.status(400).json(errorResponse);
+    }
+    
+    console.log(`📤 Sending generic error response`);
+    res.status(500).json({ error: 'Failed to void invoice' });
+  }
+});
+
+// Permanently delete invoice (completely removes from QuickBooks)
+app.delete('/api/invoices/:id/permanent-delete', async (req, res) => {
+  console.log(`\n🔥 EXPRESS PERMANENT DELETE ENDPOINT CALLED`);
+  console.log(`📝 Invoice ID parameter: ${req.params.id}`);
+  
+  try {
+    console.log(`🔐 Getting access token...`);
+    const accessToken = await getValidAccessToken();
+    console.log(`🎫 Access token obtained: ${accessToken ? 'YES' : 'NO'}`);
+    
+    const tokens = tokenCache.get('quickbooks_tokens');
+    console.log(`💾 Tokens from cache:`, tokens ? 'PRESENT' : 'NOT FOUND');
+    
+    const { id } = req.params;
+    console.log(`🔍 Processing invoice ID: ${id}`);
+
+    // First, get the current invoice to check if it can be deleted
+    console.log(`📡 Making GET request to QuickBooks for invoice ${id}`);
+    console.log(`🌐 URL: ${QUICKBOOKS_CONFIG.baseUrl}/v3/company/${tokens.realmId}/invoice/${id}`);
+    
+    const getResponse = await axios.get(
+      `${QUICKBOOKS_CONFIG.baseUrl}/v3/company/${tokens.realmId}/invoice/${id}`,
+      {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Accept': 'application/json'
+        }
+      }
+    );
+
+    console.log(`📋 Get invoice response status: ${getResponse.status}`);
+    console.log(`📋 Get invoice response data:`, JSON.stringify(getResponse.data, null, 2));
+
+    const invoice = getResponse.data.QueryResponse?.Invoice?.[0] || getResponse.data.Invoice;
+    console.log(`🔍 Found invoice:`, invoice ? `YES (ID: ${invoice.Id})` : 'NO');
+    
+    if (!invoice) {
+      console.log(`❌ Invoice ${id} not found in QuickBooks`);
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
+
+    console.log(`💰 Invoice balance: ${invoice.Balance}, Total: ${invoice.TotalAmt}`);
+    
+    // Check if invoice can be deleted (same rules as voiding - no payments)
+    if (parseFloat(invoice.Balance || 0) !== parseFloat(invoice.TotalAmt || 0)) {
+      console.log(`❌ Invoice has payments applied - cannot delete`);
+      return res.status(400).json({ 
+        error: 'Cannot permanently delete invoice that has payments applied. Only fully unpaid invoices can be deleted.',
+        details: {
+          totalAmount: invoice.TotalAmt,
+          balance: invoice.Balance,
+          status: 'partially_paid'
+        }
+      });
+    }
+
+    // Now permanently delete the invoice using QuickBooks DELETE operation
+    console.log(`🚀 Attempting to permanently delete invoice ${id}`);
+    console.log(`🌐 Delete URL: ${QUICKBOOKS_CONFIG.baseUrl}/v3/company/${tokens.realmId}/invoice?operation=delete`);
+    console.log(`📤 Delete payload:`, JSON.stringify({ Id: id, SyncToken: invoice.SyncToken }, null, 2));
+    
+    const deleteResponse = await axios.post(
+      `${QUICKBOOKS_CONFIG.baseUrl}/v3/company/${tokens.realmId}/invoice?operation=delete`,
+      {
+        Id: id,
+        SyncToken: invoice.SyncToken
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        }
+      }
+    );
+
+    console.log(`✅ Delete response status: ${deleteResponse.status}`);
+    console.log(`✅ Delete response data:`, JSON.stringify(deleteResponse.data, null, 2));
+
+    console.log('Invoice permanently deleted:', {
+      invoiceId: id,
+      docNumber: invoice.DocNumber,
+      syncToken: invoice.SyncToken
+    });
+
+    const successResponse = { 
+      success: true, 
+      message: `Invoice #${invoice.DocNumber} permanently deleted from QuickBooks`,
+      deletedInvoice: deleteResponse.data.QueryResponse?.Invoice?.[0]
+    };
+    
+    console.log(`📤 Sending success response:`, JSON.stringify(successResponse, null, 2));
+    res.json(successResponse);
+  } catch (error) {
+    console.log(`💥 EXPRESS PERMANENT DELETE ERROR occurred:`);
+    console.log(`🔍 Error message:`, error.message);
+    console.log(`🔍 Error response status:`, error.response?.status);
+    console.log(`🔍 Error response data:`, JSON.stringify(error.response?.data, null, 2));
+    console.log(`🔍 Full error:`, error);
+    
+    console.error('Permanent delete invoice error:', error.response?.data || error.message);
+    
+    // Provide more detailed error information
+    if (error.response?.data?.Fault) {
+      const fault = error.response.data.Fault;
+      const errorDetail = fault.Error?.[0];
+      
+      console.error('QuickBooks Fault Details:', {
+        type: fault.type,
+        code: errorDetail?.code,
+        detail: errorDetail?.Detail,
+        element: errorDetail?.element
+      });
+      
+      const errorResponse = { 
+        error: 'QuickBooks validation error',
+        details: {
+          type: fault.type,
+          code: errorDetail?.code,
+          message: errorDetail?.Detail || 'Unknown validation error',
+          element: errorDetail?.element
+        }
+      };
+      
+      console.log(`📤 Sending error response:`, JSON.stringify(errorResponse, null, 2));
+      return res.status(400).json(errorResponse);
+    }
+    
+    console.log(`📤 Sending generic error response`);
+    res.status(500).json({ error: 'Failed to permanently delete invoice' });
   }
 });
 
@@ -1825,21 +2286,31 @@ app.post('/api/ai/chat', async (req, res) => {
     console.log('Processing AI chat request:', { message, sessionId });
 
     // Use OpenAI with tools
-    const result = await generateText({
+        const result = await generateText({
       model: openai('gpt-4o-mini'),
       tools: invoiceTools,
       maxSteps: 5,
-              messages: [
-          {
-            role: 'system',
-            content: `You are an AI assistant for QuickBooks invoice management. You help users manage their invoices, customers, and business analytics through natural language.
+      messages: [
+        {
+          role: 'system',
+          content: `You are an AI assistant for QuickBooks invoice management. You help users manage their invoices, customers, and business analytics through natural language.
 
 Key capabilities:
 - Get and search invoices
+- Create and delete invoices
 - Analyze invoice data and provide business insights
 - Get customer information
 - Retrieve company details
 - Answer questions about business performance
+
+TOOL SELECTION RULES:
+- For general requests like "show all invoices" or "display invoices": Use openInvoiceSlider tool first
+- For specific invoices like "show invoice 1037": Use getInvoiceByNumber tool
+- For invoice analysis or data: Use getInvoices tool (but combine with openInvoiceSlider for display)
+- For deletion requests: Use deleteInvoice tool with these rules:
+  * Words like "delete", "remove", "erase": Use operation="delete" (permanently removes)
+  * Only when specifically asked to "void": Use operation="void" (marks as $0)
+- For creation requests: Use createInvoice tool
 
 CRITICAL RESPONSE RULES:
 - When tools return a 'summary' field, use ONLY that summary text as your response
@@ -1876,8 +2347,9 @@ Current context: User is authenticated with QuickBooks and ready to use all feat
       })).filter(Boolean) || [],
       timestamp: new Date().toISOString(),
       suggestions: [
-        'Show me recent invoices',
+        'Show me all invoices',
         'What are my unpaid invoices?',
+        'Delete invoice 1037',
         'Analyze my revenue',
         'Get customer list',
         'Show overdue invoices'
@@ -1946,10 +2418,20 @@ app.post('/api/ai/chat/stream', async (req, res) => {
 
 Key capabilities:
 - Get and search invoices
+- Create and delete invoices
 - Analyze invoice data and provide business insights
 - Get customer information
 - Retrieve company details
 - Answer questions about business performance
+
+TOOL SELECTION RULES:
+- For general requests like "show all invoices" or "display invoices": Use openInvoiceSlider tool first
+- For specific invoices like "show invoice 1037": Use getInvoiceByNumber tool
+- For invoice analysis or data: Use getInvoices tool (but combine with openInvoiceSlider for display)
+- For deletion requests: Use deleteInvoice tool with these rules:
+  * Words like "delete", "remove", "erase": Use operation="delete" (permanently removes)
+  * Only when specifically asked to "void": Use operation="void" (marks as $0)
+- For creation requests: Use createInvoice tool
 
 CRITICAL RESPONSE RULES:
 - When tools return a 'summary' field, use ONLY that summary text as your response

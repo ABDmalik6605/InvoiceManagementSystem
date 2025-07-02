@@ -11,6 +11,7 @@ function App() {
   const [authError, setAuthError] = useState(null);
   const [selectedInvoice, setSelectedInvoice] = useState(null);
   const [refreshInvoices, setRefreshInvoices] = useState(0);
+  const [forceSliderView, setForceSliderView] = useState(null);
 
   // Check authentication status on app load
   useEffect(() => {
@@ -40,6 +41,13 @@ function App() {
   // Handle invoice selection from chat or invoice panel
   const handleInvoiceSelect = (invoice) => {
     setSelectedInvoice(invoice);
+  };
+
+  // Handle opening invoice slider (clear selection to show slider view)
+  const handleOpenInvoiceSlider = (filter = 'all') => {
+    setSelectedInvoice(null); // Clear selection to show slider view
+    setForceSliderView({ view: 'slider', filter: filter }); // Force slider view with filter
+    handleInvoiceUpdate(); // Refresh invoices
   };
 
   if (isLoading) {
@@ -73,6 +81,7 @@ function App() {
             <ChatPanel 
               onInvoiceUpdate={handleInvoiceUpdate}
               onInvoiceSelect={handleInvoiceSelect}
+              onOpenInvoiceSlider={handleOpenInvoiceSlider}
             />
           </div>
           
@@ -82,6 +91,8 @@ function App() {
               selectedInvoice={selectedInvoice}
               refreshTrigger={refreshInvoices}
               onInvoiceSelect={handleInvoiceSelect}
+              forceSliderView={forceSliderView}
+              onSliderViewApplied={() => setForceSliderView(null)}
             />
           </div>
         </div>

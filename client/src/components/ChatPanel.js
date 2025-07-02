@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { sendChatMessage, handleApiError, getInvoiceByNumber } from '../utils/api';
 
-const ChatPanel = ({ onInvoiceUpdate, onInvoiceSelect }) => {
+const ChatPanel = ({ onInvoiceUpdate, onInvoiceSelect, onOpenInvoiceSlider }) => {
   const [messages, setMessages] = useState([
     {
       id: 1,
@@ -13,12 +13,27 @@ const ChatPanel = ({ onInvoiceUpdate, onInvoiceSelect }) => {
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [sessionId] = useState(`session-${Date.now()}`);
+  const [currentSuggestions, setCurrentSuggestions] = useState([]);
   const messagesEndRef = useRef(null);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // Load initial suggestions when component mounts
+  useEffect(() => {
+    // Set initial suggestions that match the backend
+    const initialSuggestions = [
+      'Show me all invoices',
+      'What are my unpaid invoices?',
+      'Void invoice 1037',
+      'Analyze my revenue',
+      'Get customer list',
+      'Show overdue invoices'
+    ];
+    setCurrentSuggestions(initialSuggestions);
+  }, []);
 
   // Function to detect and extract invoice numbers from text
   const extractInvoiceNumbers = (text) => {
@@ -90,22 +105,35 @@ const ChatPanel = ({ onInvoiceUpdate, onInvoiceSelect }) => {
 
       setMessages(prev => [...prev, aiMessage]);
 
+      // Update suggestions if provided in the response
+      if (response.suggestions && response.suggestions.length > 0) {
+        setCurrentSuggestions(response.suggestions);
+      }
+
       // Check if any tool calls created or modified invoices
       let invoiceSelected = false;
       if (response.toolCalls && response.toolCalls.length > 0) {
         const hasInvoiceOperation = response.toolCalls.some(call => 
-          ['getInvoices', 'createInvoice', 'getInvoiceById', 'getInvoiceByNumber'].includes(call.toolName)
+          ['getInvoices', 'createInvoice', 'getInvoiceById', 'getInvoiceByNumber', 'deleteInvoice'].includes(call.toolName)
         );
         
         if (hasInvoiceOperation) {
           onInvoiceUpdate();
         }
 
+        // Check for openInvoiceSlider tool call
+        const sliderCall = response.toolCalls.find(call => call.toolName === 'openInvoiceSlider');
+        if (sliderCall && sliderCall.result && sliderCall.result.success) {
+          console.log('Opening invoice slider via AI tool:', sliderCall.result);
+          onOpenInvoiceSlider && onOpenInvoiceSlider(sliderCall.result.filter || 'all');
+          invoiceSelected = true; // Prevent other selection logic from running
+        }
+
         // If a specific invoice was retrieved, select it
         const invoiceCall = response.toolCalls.find(call => 
           call.toolName === 'getInvoiceById' || call.toolName === 'getInvoiceByNumber'
         );
-        if (invoiceCall && invoiceCall.result && invoiceCall.result.success) {
+        if (invoiceCall && invoiceCall.result && invoiceCall.result.success && !invoiceSelected) {
           console.log('Using AI tool result for invoice selection:', invoiceCall.result.invoice);
           onInvoiceSelect(invoiceCall.result.invoice);
           invoiceSelected = true;
@@ -143,14 +171,38 @@ const ChatPanel = ({ onInvoiceUpdate, onInvoiceSelect }) => {
     }
   };
 
-  const quickActions = [
-    { text: 'Show recent invoices', icon: '📄' },
-    { text: 'Show me invoice 1037', icon: '🔍' },
-    { text: 'Analyze my revenue', icon: '📊' },
-    { text: 'Find unpaid invoices', icon: '💰' },
-    { text: 'Get customer list', icon: '👥' },
-    { text: 'Show overdue invoices', icon: '⚠️' }
+  // Icon mapping function for dynamic suggestions
+  const getIconForSuggestion = (text) => {
+    const lowerText = text.toLowerCase();
+    if (lowerText.includes('void') || lowerText.includes('delete')) return '🗑️';
+    if (lowerText.includes('invoice') && lowerText.includes('show')) return '🔍';
+    if (lowerText.includes('all invoices') || lowerText.includes('recent') || lowerText.includes('invoices')) return '📄';
+    if (lowerText.includes('unpaid') || lowerText.includes('balance')) return '💰';
+    if (lowerText.includes('overdue')) return '⚠️';
+    if (lowerText.includes('revenue') || lowerText.includes('analyze')) return '📊';
+    if (lowerText.includes('customer')) return '👥';
+    if (lowerText.includes('payment')) return '💳';
+    if (lowerText.includes('create')) return '➕';
+    return '💬'; // Default icon
+  };
+
+  // Default fallback suggestions
+  const defaultSuggestions = [
+    'Show recent invoices',
+    'Show me invoice 1037', 
+    'Analyze my revenue',
+    'Find unpaid invoices',
+    'Get customer list',
+    'Show overdue invoices'
   ];
+
+  // Use dynamic suggestions from AI response, or fall back to defaults
+  const activeSuggestions = currentSuggestions.length > 0 ? currentSuggestions : defaultSuggestions;
+  
+  const quickActions = activeSuggestions.map(text => ({
+    text,
+    icon: getIconForSuggestion(text)
+  }));
 
   const handleQuickAction = (actionText) => {
     setInputMessage(actionText);

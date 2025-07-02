@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { getInvoices, handleApiError, formatCurrency, formatDate, getInvoiceStatus } from '../utils/api';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { getInvoices, handleApiError, formatCurrency, formatDate, getInvoiceStatus, deleteInvoice } from '../utils/api';
+import { ChevronLeft, ChevronRight, Trash2, X } from 'lucide-react';
+import DeleteConfirmModal from './DeleteConfirmModal';
 
-const InvoicePanel = ({ selectedInvoice, refreshTrigger, onInvoiceSelect }) => {
+const InvoicePanel = ({ selectedInvoice, refreshTrigger, onInvoiceSelect, forceSliderView, onSliderViewApplied }) => {
   const [invoices, setInvoices] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -11,6 +12,13 @@ const InvoicePanel = ({ selectedInvoice, refreshTrigger, onInvoiceSelect }) => {
   const [currentSlide, setCurrentSlide] = useState(0);
   const [slidesPerView] = useState(6); // Number of invoices to show per slide
   const [filter, setFilter] = useState('all'); // Filter: 'all', 'paid', 'unpaid', 'overdue'
+  
+  // Delete functionality state
+  const [selectedInvoices, setSelectedInvoices] = useState(new Set());
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [invoicesToDelete, setInvoicesToDelete] = useState([]);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [showBulkActions, setShowBulkActions] = useState(false);
 
   useEffect(() => {
     const loadData = async () => {
@@ -61,6 +69,17 @@ const InvoicePanel = ({ selectedInvoice, refreshTrigger, onInvoiceSelect }) => {
     }
   }, [selectedInvoice]);
 
+  // Handle forced slider view from AI
+  useEffect(() => {
+    if (forceSliderView) {
+      setView(forceSliderView.view);
+      setFilter(forceSliderView.filter);
+      setCurrentSlide(0);
+      // Notify parent that the forced view has been applied
+      onSliderViewApplied && onSliderViewApplied();
+    }
+  }, [forceSliderView, onSliderViewApplied]);
+
   // Filter invoices based on current filter
   const filteredInvoices = invoices.filter(invoice => {
     if (filter === 'all') return true;
@@ -72,6 +91,87 @@ const InvoicePanel = ({ selectedInvoice, refreshTrigger, onInvoiceSelect }) => {
   useEffect(() => {
     setCurrentSlide(0);
   }, [filter]);
+
+  // Clear selections when filter changes
+  useEffect(() => {
+    setSelectedInvoices(new Set());
+    setShowBulkActions(false);
+  }, [filter]);
+
+  // Delete functionality handlers
+  const handleSelectInvoice = (invoice, event) => {
+    event.stopPropagation(); // Prevent card click
+    const newSelected = new Set(selectedInvoices);
+    
+    if (newSelected.has(invoice.Id)) {
+      newSelected.delete(invoice.Id);
+    } else {
+      newSelected.add(invoice.Id);
+    }
+    
+    setSelectedInvoices(newSelected);
+    setShowBulkActions(newSelected.size > 0);
+  };
+
+  const handleSelectAll = () => {
+    if (selectedInvoices.size === filteredInvoices.length) {
+      setSelectedInvoices(new Set());
+      setShowBulkActions(false);
+    } else {
+      setSelectedInvoices(new Set(filteredInvoices.map(inv => inv.Id)));
+      setShowBulkActions(true);
+    }
+  };
+
+  const handleDeleteSingle = (invoice, event) => {
+    event.stopPropagation(); // Prevent card click
+    setInvoicesToDelete([invoice]);
+    setShowDeleteModal(true);
+  };
+
+  const handleDeleteSelected = () => {
+    const invoicesToDeleteList = filteredInvoices.filter(inv => selectedInvoices.has(inv.Id));
+    setInvoicesToDelete(invoicesToDeleteList);
+    setShowDeleteModal(true);
+  };
+
+  const executeDelete = async () => {
+    setIsDeleting(true);
+    
+    try {
+      const promises = invoicesToDelete.map(invoice => deleteInvoice(invoice.Id));
+      await Promise.all(promises);
+      
+      // Refresh invoice list
+      const refreshData = async () => {
+        try {
+          const invoicesData = await getInvoices({ limit: 50 });
+          const invoiceList = invoicesData.QueryResponse?.Invoice || [];
+          setInvoices(invoiceList);
+        } catch (err) {
+          console.error('Refresh failed:', err);
+        }
+      };
+      await refreshData();
+      
+      // Clear selections and close modal
+      setSelectedInvoices(new Set());
+      setShowBulkActions(false);
+      setShowDeleteModal(false);
+      setInvoicesToDelete([]);
+      
+    } catch (error) {
+      console.error('Delete failed:', error);
+      alert('Failed to delete invoices. Please try again.');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const cancelDelete = () => {
+    setShowDeleteModal(false);
+    setInvoicesToDelete([]);
+  };
 
   const nextSlide = () => {
     const maxSlide = Math.max(0, Math.ceil(filteredInvoices.length / slidesPerView) - 1);
@@ -166,6 +266,37 @@ const InvoicePanel = ({ selectedInvoice, refreshTrigger, onInvoiceSelect }) => {
         </div>
       </div>
 
+      {/* Bulk Actions Bar */}
+      {showBulkActions && (
+        <div className="flex-shrink-0 bg-blue-50 border-b border-blue-200 px-4 py-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-3">
+              <span className="text-sm font-medium text-blue-900">
+                {selectedInvoices.size} invoice{selectedInvoices.size !== 1 ? 's' : ''} selected
+              </span>
+              <button
+                onClick={() => {
+                  setSelectedInvoices(new Set());
+                  setShowBulkActions(false);
+                }}
+                className="text-sm text-blue-600 hover:text-blue-800"
+              >
+                Clear selection
+              </button>
+            </div>
+            <div className="flex items-center space-x-2">
+              <button
+                onClick={handleDeleteSelected}
+                className="px-3 py-1 bg-red-600 text-white text-sm font-medium rounded-md hover:bg-red-700 flex items-center space-x-1"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>Delete Selected</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Content */}
       <div className="flex-1 overflow-hidden p-4">
         {/* Invoice Slider View */}
@@ -174,6 +305,15 @@ const InvoicePanel = ({ selectedInvoice, refreshTrigger, onInvoiceSelect }) => {
             {/* Filter Options */}
             <div className="flex items-center justify-between mb-3 pb-3 border-b border-gray-200">
               <div className="flex items-center space-x-1">
+                <div className="flex items-center space-x-2 mr-4">
+                  <input
+                    type="checkbox"
+                    checked={filteredInvoices.length > 0 && selectedInvoices.size === filteredInvoices.length}
+                    onChange={handleSelectAll}
+                    className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                  />
+                  <span className="text-sm text-gray-600">Select All</span>
+                </div>
                 <span className="text-sm font-medium text-gray-700 mr-2">Filter:</span>
                 <button
                   onClick={() => setFilter('all')}
@@ -284,13 +424,37 @@ const InvoicePanel = ({ selectedInvoice, refreshTrigger, onInvoiceSelect }) => {
                          >
                            {/* Invoice Grid */}
                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 flex-1">
-                             {slideInvoices.map((invoice) => (
-                                                                <div
+                                                          {slideInvoices.map((invoice) => (
+                               <div
                                  key={invoice.Id}
-                                 onClick={() => onInvoiceSelect(invoice)}
-                                 className="invoice-card cursor-pointer h-40 flex flex-col justify-between transform hover:scale-105 transition-transform duration-200"
+                                 className="invoice-card relative h-40 flex flex-col justify-between transform hover:scale-105 transition-transform duration-200"
                                >
-                                 <div className="flex-1">
+                                 {/* Selection checkbox */}
+                                 <div className="absolute top-2 left-2 z-10">
+                                   <input
+                                     type="checkbox"
+                                     checked={selectedInvoices.has(invoice.Id)}
+                                     onChange={(e) => handleSelectInvoice(invoice, e)}
+                                     className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                                   />
+                                 </div>
+                                 
+                                 {/* Delete button */}
+                                 <div className="absolute top-2 right-2 z-10">
+                                   <button
+                                     onClick={(e) => handleDeleteSingle(invoice, e)}
+                                     className="p-1 text-red-600 hover:text-red-800 hover:bg-red-50 rounded-full transition-colors"
+                                     title="Delete invoice"
+                                   >
+                                     <Trash2 className="w-4 h-4" />
+                                   </button>
+                                 </div>
+                                 
+                                 {/* Clickable area for selection */}
+                                 <div 
+                                   onClick={() => onInvoiceSelect(invoice)}
+                                   className="flex-1 cursor-pointer p-3 pt-8"
+                                 >
                                    <div className="flex items-center justify-between mb-2">
                                      <h4 className="text-sm font-medium text-gray-900 truncate">
                                        #{invoice.DocNumber}
@@ -308,22 +472,22 @@ const InvoicePanel = ({ selectedInvoice, refreshTrigger, onInvoiceSelect }) => {
                                        Due Date: {formatDate(invoice.DueDate)}
                                      </div>
                                    </div>
-                                 </div>
-                                 
-                                 <div className="mt-auto">
-                                   {parseFloat(invoice.Balance || 0) > 0 ? (
-                                     <div className="border-t border-gray-100 pt-1">
-                                       <span className="text-xs text-red-600 font-medium">
-                                         Balance: {formatCurrency(invoice.Balance)}
-                                       </span>
-                                     </div>
-                                   ) : (
-                                     <div className="border-t border-gray-100 pt-1">
-                                       <span className="text-xs text-green-600 font-medium">
-                                         Fully Paid
-                                       </span>
-                                     </div>
-                                   )}
+                                   
+                                   <div className="mt-auto">
+                                     {parseFloat(invoice.Balance || 0) > 0 ? (
+                                       <div className="border-t border-gray-100 pt-1">
+                                         <span className="text-xs text-red-600 font-medium">
+                                           Balance: {formatCurrency(invoice.Balance)}
+                                         </span>
+                                       </div>
+                                     ) : (
+                                       <div className="border-t border-gray-100 pt-1">
+                                         <span className="text-xs text-green-600 font-medium">
+                                           Fully Paid
+                                         </span>
+                                       </div>
+                                     )}
+                                   </div>
                                  </div>
                                </div>
                              ))}
@@ -382,6 +546,15 @@ const InvoicePanel = ({ selectedInvoice, refreshTrigger, onInvoiceSelect }) => {
             {/* Filter Options */}
             <div className="flex items-center justify-between mb-3 pb-3 border-b border-gray-200">
               <div className="flex items-center space-x-1">
+                <div className="flex items-center space-x-2 mr-4">
+                  <input
+                    type="checkbox"
+                    checked={filteredInvoices.length > 0 && selectedInvoices.size === filteredInvoices.length}
+                    onChange={handleSelectAll}
+                    className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                  />
+                  <span className="text-sm text-gray-600">Select All</span>
+                </div>
                 <span className="text-sm font-medium text-gray-700 mr-2">Filter:</span>
                 <button
                   onClick={() => setFilter('all')}
@@ -453,12 +626,33 @@ const InvoicePanel = ({ selectedInvoice, refreshTrigger, onInvoiceSelect }) => {
                 {filteredInvoices.map((invoice) => (
                   <div
                     key={invoice.Id}
-                    onClick={() => onInvoiceSelect(invoice)}
-                    className="invoice-card cursor-pointer"
+                    className="invoice-card relative"
                   >
                     <div className="flex items-center justify-between mb-1">
-                      <h4 className="text-sm font-medium text-gray-900">Invoice #{invoice.DocNumber}</h4>
-                      {renderStatusBadge(invoice)}
+                      <div className="flex items-center space-x-3">
+                        <input
+                          type="checkbox"
+                          checked={selectedInvoices.has(invoice.Id)}
+                          onChange={(e) => handleSelectInvoice(invoice, e)}
+                          className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                        />
+                        <h4 
+                          onClick={() => onInvoiceSelect(invoice)}
+                          className="text-sm font-medium text-gray-900 cursor-pointer hover:text-blue-600"
+                        >
+                          Invoice #{invoice.DocNumber}
+                        </h4>
+                      </div>
+                      <div className="flex items-center space-x-2">
+                        {renderStatusBadge(invoice)}
+                        <button
+                          onClick={(e) => handleDeleteSingle(invoice, e)}
+                          className="p-1 text-red-600 hover:text-red-800 hover:bg-red-50 rounded-full transition-colors"
+                          title="Delete invoice"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     </div>
                     <p className="text-sm text-gray-600">{invoice.CustomerRef?.name || 'Unknown Customer'}</p>
                     <div className="flex items-center justify-between mt-2">
@@ -612,6 +806,15 @@ const InvoicePanel = ({ selectedInvoice, refreshTrigger, onInvoiceSelect }) => {
           </div>
         )}
       </div>
+      
+      {/* Delete Confirmation Modal */}
+      <DeleteConfirmModal
+        isOpen={showDeleteModal}
+        onClose={cancelDelete}
+        onConfirm={executeDelete}
+        invoices={invoicesToDelete}
+        isDeleting={isDeleting}
+      />
     </div>
   );
 };

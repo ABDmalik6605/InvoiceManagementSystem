@@ -40,6 +40,11 @@ export const api = {
     return response.data;
   },
 
+  deleteInvoice: async (invoiceId) => {
+    const response = await axios.delete(`/api/invoices/${invoiceId}/permanent-delete`);
+    return response.data;
+  },
+
   // Company
   getCompanyInfo: async () => {
     const response = await axios.get('/api/company');
@@ -69,6 +74,7 @@ export const sendChatMessage = api.sendChatMessage;
 export const getInvoices = api.getInvoices;
 export const getInvoiceById = api.getInvoiceById;
 export const createInvoice = api.createInvoice;
+export const deleteInvoice = api.deleteInvoice;
 export const getCompanyInfo = api.getCompanyInfo;
 export const getBulkData = api.getBulkData;
 export const getInvoiceByNumber = api.getInvoiceByNumber;
