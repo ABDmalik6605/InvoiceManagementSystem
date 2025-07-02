@@ -50,6 +50,16 @@ export const api = {
   getBulkData: async () => {
     const response = await axios.get('/api/bulk-data');
     return response.data;
+  },
+
+  // Add this new function after the existing getInvoices function
+  getInvoiceByNumber: async (docNumber) => {
+    try {
+      const response = await axios.get(`/invoice/number/${docNumber}`);
+      return response.data;
+    } catch (error) {
+      throw error;
+    }
   }
 };
 
@@ -61,6 +71,7 @@ export const getInvoiceById = api.getInvoiceById;
 export const createInvoice = api.createInvoice;
 export const getCompanyInfo = api.getCompanyInfo;
 export const getBulkData = api.getBulkData;
+export const getInvoiceByNumber = api.getInvoiceByNumber;
 
 // Error handling utility
 export const handleApiError = (error) => {

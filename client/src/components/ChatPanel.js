@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { sendChatMessage, handleApiError } from '../utils/api';
+import { sendChatMessage, handleApiError, getInvoiceByNumber } from '../utils/api';
 
 const ChatPanel = ({ onInvoiceUpdate, onInvoiceSelect }) => {
   const [messages, setMessages] = useState([
@@ -19,6 +19,48 @@ const ChatPanel = ({ onInvoiceUpdate, onInvoiceSelect }) => {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // Function to detect and extract invoice numbers from text
+  const extractInvoiceNumbers = (text) => {
+    // Patterns to match: "invoice 1001", "invoice number 1001", "#1001", "Invoice #1001", etc.
+    const patterns = [
+      /invoice\s+(?:number\s+)?#?(\d+)/gi,
+      /invoice\s*#(\d+)/gi,
+      /#(\d+)/g,
+      /\binvoice\s+(\d+)\b/gi
+    ];
+    
+    const invoiceNumbers = new Set();
+    
+    patterns.forEach(pattern => {
+      const matches = text.matchAll(pattern);
+      for (const match of matches) {
+        if (match[1]) {
+          invoiceNumbers.add(match[1]);
+        }
+      }
+    });
+    
+    return Array.from(invoiceNumbers);
+  };
+
+  // Function to automatically fetch and select invoice by number
+  const autoSelectInvoiceByNumber = async (docNumber) => {
+    try {
+      const response = await getInvoiceByNumber(docNumber);
+      const invoice = response.QueryResponse?.Invoice?.[0];
+      
+      if (invoice) {
+        console.log(`Auto-selecting invoice ${docNumber}:`, invoice);
+        onInvoiceSelect(invoice);
+        return true;
+      }
+    } catch (error) {
+      console.log(`Invoice ${docNumber} not found or error fetching:`, error);
+      return false;
+    }
+    return false;
+  };
 
   const handleSendMessage = async (e) => {
     e.preventDefault();
@@ -49,9 +91,10 @@ const ChatPanel = ({ onInvoiceUpdate, onInvoiceSelect }) => {
       setMessages(prev => [...prev, aiMessage]);
 
       // Check if any tool calls created or modified invoices
+      let invoiceSelected = false;
       if (response.toolCalls && response.toolCalls.length > 0) {
         const hasInvoiceOperation = response.toolCalls.some(call => 
-          ['getInvoices', 'createInvoice', 'getInvoiceById'].includes(call.toolName)
+          ['getInvoices', 'createInvoice', 'getInvoiceById', 'getInvoiceByNumber'].includes(call.toolName)
         );
         
         if (hasInvoiceOperation) {
@@ -59,9 +102,29 @@ const ChatPanel = ({ onInvoiceUpdate, onInvoiceSelect }) => {
         }
 
         // If a specific invoice was retrieved, select it
-        const invoiceCall = response.toolCalls.find(call => call.toolName === 'getInvoiceById');
-        if (invoiceCall && invoiceCall.result) {
+        const invoiceCall = response.toolCalls.find(call => 
+          call.toolName === 'getInvoiceById' || call.toolName === 'getInvoiceByNumber'
+        );
+        if (invoiceCall && invoiceCall.result && invoiceCall.result.success) {
+          console.log('Using AI tool result for invoice selection:', invoiceCall.result.invoice);
           onInvoiceSelect(invoiceCall.result.invoice);
+          invoiceSelected = true;
+        }
+      }
+
+      // Only use pattern detection if AI tool didn't already select an invoice
+      if (!invoiceSelected) {
+        const invoiceNumbers = extractInvoiceNumbers(response.response);
+        if (invoiceNumbers.length > 0) {
+          // Try to find and select the first mentioned invoice number
+          const firstInvoiceNumber = invoiceNumbers[0];
+          console.log(`Detected invoice numbers in AI response: ${invoiceNumbers.join(', ')}`);
+          console.log(`Attempting to auto-select invoice: ${firstInvoiceNumber}`);
+          
+          const success = await autoSelectInvoiceByNumber(firstInvoiceNumber);
+          if (success) {
+            console.log(`Successfully auto-selected invoice ${firstInvoiceNumber}`);
+          }
         }
       }
 
@@ -82,6 +145,7 @@ const ChatPanel = ({ onInvoiceUpdate, onInvoiceSelect }) => {
 
   const quickActions = [
     { text: 'Show recent invoices', icon: '📄' },
+    { text: 'Show me invoice 1037', icon: '🔍' },
     { text: 'Analyze my revenue', icon: '📊' },
     { text: 'Find unpaid invoices', icon: '💰' },
     { text: 'Get customer list', icon: '👥' },
@@ -126,18 +190,6 @@ const ChatPanel = ({ onInvoiceUpdate, onInvoiceSelect }) => {
               }`}
             >
               <div className="whitespace-pre-wrap text-sm">{message.content}</div>
-              
-              {/* Show tool calls if any */}
-              {message.toolCalls && message.toolCalls.length > 0 && (
-                <div className="mt-2 pt-2 border-t border-gray-200">
-                  <div className="text-xs text-gray-500 mb-1">Used tools:</div>
-                  {message.toolCalls.map((call, index) => (
-                    <div key={index} className="text-xs bg-gray-50 px-2 py-1 rounded mb-1">
-                      <span className="font-medium">{call.toolName}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
               
               <div className="text-xs opacity-70 mt-1">
                 {message.timestamp.toLocaleTimeString()}

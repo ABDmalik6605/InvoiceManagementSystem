@@ -124,7 +124,7 @@ const invoiceTools = {
   }),
 
   getInvoiceById: tool({
-    description: 'Get detailed information about a specific invoice by its ID. Returns complete invoice data including line items, customer details, and payment information.',
+    description: 'Get detailed information about a specific invoice by its ID. Returns complete invoice data including line items, customer details, and payment information. Provide a concise 3-6 line summary.',
     parameters: z.object({
       invoiceId: z.string().describe('The ID of the invoice to retrieve'),
     }),
@@ -140,26 +140,73 @@ const invoiceTools = {
           };
         }
 
+        // Generate concise summary (3-6 lines)
+        const customerName = invoice.CustomerRef?.name || 'Unknown';
+        const status = parseFloat(invoice.Balance || 0) > 0 ? 'unpaid' : 'paid';
+        const lineItems = invoice.Line?.filter(line => line.DetailType === 'SalesItemLineDetail') || [];
+        
+        let summary = `Invoice #${invoice.DocNumber} for ${customerName} is ${status}. `;
+        summary += `Total amount: $${invoice.TotalAmt}, Balance due: $${invoice.Balance || '0.00'}. `;
+        summary += `Invoice date: ${invoice.TxnDate}, Due date: ${invoice.DueDate || 'Not specified'}. `;
+        
+        if (lineItems.length > 0) {
+          const mainItems = lineItems.slice(0, 2).map(item => item.Description || 'Item').join(', ');
+          const moreText = lineItems.length > 2 ? ` and ${lineItems.length - 2} more items` : '';
+          summary += `Items include: ${mainItems}${moreText}.`;
+        }
+
         return {
           success: true,
-          invoice: {
-            id: invoice.Id,
-            number: invoice.DocNumber,
-            customer: {
-              id: invoice.CustomerRef?.value,
-              name: invoice.CustomerRef?.name
-            },
-            amount: invoice.TotalAmt,
-            balance: invoice.Balance,
-            status: parseFloat(invoice.Balance) > 0 ? 'unpaid' : 'paid',
-            date: invoice.TxnDate,
-            dueDate: invoice.DueDate,
-            lineItems: invoice.Line?.map(line => ({
-              description: line.Description,
-              amount: line.Amount,
-              quantity: line.SalesItemLineDetail?.Qty
-            })) || []
-          }
+          invoice: invoice,  // Return raw QuickBooks invoice object that frontend expects
+          summary: summary   // Concise plain text summary for AI response
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: 'Failed to fetch invoice: ' + error.message
+        };
+      }
+    },
+  }),
+
+  getInvoiceByNumber: tool({
+    description: 'Get detailed information about a specific invoice by its invoice number (DocNumber). Use this when someone asks for "invoice 1001" or "show me invoice number 1035". Provide a concise 3-6 line summary.',
+    parameters: z.object({
+      invoiceNumber: z.string().describe('The invoice number (DocNumber) to retrieve'),
+    }),
+    execute: async ({ invoiceNumber }) => {
+      try {
+        // Query QuickBooks directly for invoice by DocNumber
+        const query = `SELECT * FROM Invoice WHERE DocNumber = '${invoiceNumber}' MAXRESULTS 1`;
+        const result = await makeInternalAPICall(`/query?query=${encodeURIComponent(query)}`);
+        const invoice = result.QueryResponse?.Invoice?.[0];
+        
+        if (!invoice) {
+          return {
+            success: false,
+            error: `Invoice number ${invoiceNumber} not found`
+          };
+        }
+
+        // Generate concise summary (3-6 lines)
+        const customerName = invoice.CustomerRef?.name || 'Unknown';
+        const status = parseFloat(invoice.Balance || 0) > 0 ? 'unpaid' : 'paid';
+        const lineItems = invoice.Line?.filter(line => line.DetailType === 'SalesItemLineDetail') || [];
+        
+        let summary = `Invoice #${invoice.DocNumber} for ${customerName} is ${status}. `;
+        summary += `Total amount: $${invoice.TotalAmt}, Balance due: $${invoice.Balance || '0.00'}. `;
+        summary += `Invoice date: ${invoice.TxnDate}, Due date: ${invoice.DueDate || 'Not specified'}. `;
+        
+        if (lineItems.length > 0) {
+          const mainItems = lineItems.slice(0, 2).map(item => item.Description || 'Item').join(', ');
+          const moreText = lineItems.length > 2 ? ` and ${lineItems.length - 2} more items` : '';
+          summary += `Items include: ${mainItems}${moreText}.`;
+        }
+
+        return {
+          success: true,
+          invoice: invoice,  // Return raw QuickBooks invoice object that frontend expects
+          summary: summary   // Concise plain text summary for AI response
         };
       } catch (error) {
         return {
@@ -1782,10 +1829,10 @@ app.post('/api/ai/chat', async (req, res) => {
       model: openai('gpt-4o-mini'),
       tools: invoiceTools,
       maxSteps: 5,
-      messages: [
-        {
-          role: 'system',
-          content: `You are an AI assistant for QuickBooks invoice management. You help users manage their invoices, customers, and business analytics through natural language.
+              messages: [
+          {
+            role: 'system',
+            content: `You are an AI assistant for QuickBooks invoice management. You help users manage their invoices, customers, and business analytics through natural language.
 
 Key capabilities:
 - Get and search invoices
@@ -1794,10 +1841,18 @@ Key capabilities:
 - Retrieve company details
 - Answer questions about business performance
 
-Always be helpful, professional, and provide actionable insights. When showing financial data, format amounts as currency (e.g., $1,234.56).
+CRITICAL RESPONSE RULES:
+- When tools return a 'summary' field, use ONLY that summary text as your response
+- NEVER generate your own detailed breakdown or formatting
+- Use NO asterisks, dashes, bold, italic, underlines, emojis, or markdown
+- Provide only 3-6 lines of plain conversational text
+- Do NOT add headers, bullet points, or structured formatting
+- Be natural and conversational, not formal or structured
+
+Example: "Invoice #1037 for Sonnenschein Family Store is unpaid. Total amount: $362.07, Balance due: $362.07. Invoice date: 2025-06-05, Due date: 2025-07-05. Items include: Rock Fountain, Fountain Pump and 1 more items."
 
 Current context: User is authenticated with QuickBooks and ready to use all features.`
-        },
+          },
         {
           role: 'user',
           content: message
@@ -1896,7 +1951,15 @@ Key capabilities:
 - Retrieve company details
 - Answer questions about business performance
 
-Always be helpful, professional, and provide actionable insights. When showing financial data, format amounts as currency (e.g., $1,234.56).
+CRITICAL RESPONSE RULES:
+- When tools return a 'summary' field, use ONLY that summary text as your response
+- NEVER generate your own detailed breakdown or formatting
+- Use NO asterisks, dashes, bold, italic, underlines, emojis, or markdown
+- Provide only 3-6 lines of plain conversational text
+- Do NOT add headers, bullet points, or structured formatting
+- Be natural and conversational, not formal or structured
+
+Example: "Invoice #1037 for Sonnenschein Family Store is unpaid. Total amount: $362.07, Balance due: $362.07. Invoice date: 2025-06-05, Due date: 2025-07-05. Items include: Rock Fountain, Fountain Pump and 1 more items."
 
 Current context: User is authenticated with QuickBooks and ready to use all features.`
           },
@@ -2205,4 +2268,43 @@ app.listen(PORT, () => {
   console.log('QuickBooks OAuth endpoints:');
   console.log(`- Connect: http://localhost:${PORT}/auth/quickbooks`);
   console.log(`- Callback: http://localhost:${PORT}/auth/callback`);
+}); 
+
+// Add this new endpoint before the existing /invoice/:id endpoint (around line 1280)
+app.get('/invoice/number/:docNumber', async (req, res) => {
+  try {
+    const { docNumber } = req.params;
+    
+    if (!docNumber) {
+      return res.status(400).json({ error: 'DocNumber is required' });
+    }
+
+    const accessToken = await getValidAccessToken();
+    const tokens = tokenCache.get('quickbooks_tokens');
+    
+    // Query invoice by DocNumber
+    const query = `SELECT * FROM Invoice WHERE DocNumber = '${docNumber}' MAXRESULTS 1`;
+    const response = await axios.get(`${QUICKBOOKS_CONFIG.baseUrl}/v3/company/${tokens.realmId}/query`, {
+      params: { query },
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Accept': 'application/json'
+      }
+    });
+
+    const invoice = response.data.QueryResponse?.Invoice?.[0];
+    
+    if (!invoice) {
+      return res.status(404).json({ error: 'Invoice not found with that number' });
+    }
+
+    res.json({ QueryResponse: { Invoice: [invoice] } });
+  } catch (error) {
+    console.error('Error fetching invoice by number:', error);
+    if (error.response?.status === 401) {
+      res.status(401).json({ error: 'Invalid or expired access token' });
+    } else {
+      res.status(500).json({ error: 'Failed to fetch invoice by number' });
+    }
+  }
 }); 
