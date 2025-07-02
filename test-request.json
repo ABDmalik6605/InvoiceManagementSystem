@@ -1,4 +1,4 @@
 {
-  "message": "Hello, what can you help me with?",
-  "sessionId": "test-session"
+  "message": "Show me my recent invoices and analyze my revenue",
+  "sessionId": "test-session-ai"
 } 

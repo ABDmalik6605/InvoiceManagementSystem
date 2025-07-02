@@ -5,6 +5,11 @@ const cors = require('cors');
 const NodeCache = require('node-cache');
 require('dotenv').config();
 
+// AI SDK imports
+const { generateText, tool, streamText } = require('ai');
+const { openai } = require('@ai-sdk/openai');
+const { z } = require('zod');
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -23,6 +28,421 @@ const QUICKBOOKS_CONFIG = {
 
 // Token cache (in production, use a database)
 const tokenCache = new NodeCache({ stdTTL: 3600 }); // 1 hour TTL
+
+// ===== AI TOOLS DEFINITIONS =====
+
+// Helper function to make internal API calls
+async function makeInternalAPICall(endpoint, method = 'GET', data = null) {
+  try {
+    const accessToken = await getValidAccessToken();
+    const tokens = tokenCache.get('quickbooks_tokens');
+    
+    if (!tokens) {
+      throw new Error('Not authenticated with QuickBooks');
+    }
+
+    const baseURL = `${QUICKBOOKS_CONFIG.baseUrl}/v3/company/${tokens.realmId}`;
+    
+    const config = {
+      method,
+      url: endpoint.startsWith('http') ? endpoint : `${baseURL}${endpoint}`,
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Accept': 'application/json'
+      }
+    };
+
+    if (data && (method === 'POST' || method === 'PUT')) {
+      config.data = data;
+      config.headers['Content-Type'] = 'application/json';
+    }
+
+    const response = await axios(config);
+    return response.data;
+  } catch (error) {
+    console.error('Internal API call error:', error.response?.data || error.message);
+    throw error;
+  }
+}
+
+// Define AI tools using Vercel AI SDK
+const invoiceTools = {
+  getInvoices: tool({
+    description: 'Get a list of invoices with optional filtering by status, date range, or limit. Returns invoice data including amounts, customer info, and payment status.',
+    parameters: z.object({
+      limit: z.number().optional().describe('Maximum number of invoices to return (default: 20)'),
+      status: z.string().optional().describe('Filter by invoice status'),
+      dateFrom: z.string().optional().describe('Start date for filtering (YYYY-MM-DD format)'),
+      dateTo: z.string().optional().describe('End date for filtering (YYYY-MM-DD format)'),
+    }),
+    execute: async ({ limit = 20, status, dateFrom, dateTo }) => {
+      try {
+        let query = 'SELECT * FROM Invoice';
+        const conditions = [];
+        
+        if (status) {
+          conditions.push(`DocNumber = '${status}'`);
+        }
+        if (dateFrom) {
+          conditions.push(`TxnDate >= '${dateFrom}'`);
+        }
+        if (dateTo) {
+          conditions.push(`TxnDate <= '${dateTo}'`);
+        }
+        
+        if (conditions.length > 0) {
+          query += ' WHERE ' + conditions.join(' AND ');
+        }
+        
+        query += ` ORDER BY TxnDate DESC MAXRESULTS ${limit}`;
+        
+        const result = await makeInternalAPICall(`/query?query=${encodeURIComponent(query)}`);
+        
+        const invoices = result.QueryResponse?.Invoice || [];
+        
+        return {
+          success: true,
+          count: invoices.length,
+          invoices: invoices.map(inv => ({
+            id: inv.Id,
+            number: inv.DocNumber,
+            customer: inv.CustomerRef?.name || 'Unknown',
+            amount: inv.TotalAmt,
+            balance: inv.Balance,
+            status: parseFloat(inv.Balance) > 0 ? 'unpaid' : 'paid',
+            date: inv.TxnDate,
+            dueDate: inv.DueDate
+          }))
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: 'Failed to fetch invoices: ' + error.message
+        };
+      }
+    },
+  }),
+
+  getInvoiceById: tool({
+    description: 'Get detailed information about a specific invoice by its ID. Returns complete invoice data including line items, customer details, and payment information.',
+    parameters: z.object({
+      invoiceId: z.string().describe('The ID of the invoice to retrieve'),
+    }),
+    execute: async ({ invoiceId }) => {
+      try {
+        const result = await makeInternalAPICall(`/invoice/${invoiceId}`);
+        const invoice = result.QueryResponse?.Invoice?.[0];
+        
+        if (!invoice) {
+          return {
+            success: false,
+            error: 'Invoice not found'
+          };
+        }
+
+        return {
+          success: true,
+          invoice: {
+            id: invoice.Id,
+            number: invoice.DocNumber,
+            customer: {
+              id: invoice.CustomerRef?.value,
+              name: invoice.CustomerRef?.name
+            },
+            amount: invoice.TotalAmt,
+            balance: invoice.Balance,
+            status: parseFloat(invoice.Balance) > 0 ? 'unpaid' : 'paid',
+            date: invoice.TxnDate,
+            dueDate: invoice.DueDate,
+            lineItems: invoice.Line?.map(line => ({
+              description: line.Description,
+              amount: line.Amount,
+              quantity: line.SalesItemLineDetail?.Qty
+            })) || []
+          }
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: 'Failed to fetch invoice: ' + error.message
+        };
+      }
+    },
+  }),
+
+  createInvoice: tool({
+    description: 'Create a new invoice for a customer. Requires customer ID and line items with amounts.',
+    parameters: z.object({
+      customerId: z.string().describe('The QuickBooks customer ID'),
+      lineItems: z.array(z.object({
+        amount: z.number().describe('Line item amount'),
+        description: z.string().optional().describe('Line item description'),
+        quantity: z.number().optional().describe('Quantity (default: 1)')
+      })).describe('Array of line items for the invoice'),
+      dueDate: z.string().optional().describe('Due date in YYYY-MM-DD format'),
+    }),
+    execute: async ({ customerId, lineItems, dueDate }) => {
+      try {
+        const invoiceData = {
+          Line: lineItems.map((item, index) => ({
+            Id: (index + 1).toString(),
+            Amount: item.amount,
+            Description: item.description || `Line item ${index + 1}`,
+            DetailType: 'SalesItemLineDetail',
+            SalesItemLineDetail: {
+              Qty: item.quantity || 1
+            }
+          })),
+          CustomerRef: {
+            value: customerId
+          }
+        };
+
+        if (dueDate) {
+          invoiceData.DueDate = dueDate;
+        }
+
+        const result = await makeInternalAPICall('/invoice', 'POST', invoiceData);
+        const invoice = result.QueryResponse?.Invoice?.[0];
+
+        return {
+          success: true,
+          message: 'Invoice created successfully',
+          invoice: {
+            id: invoice.Id,
+            number: invoice.DocNumber,
+            amount: invoice.TotalAmt,
+            customer: invoice.CustomerRef?.name
+          }
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: 'Failed to create invoice: ' + error.message
+        };
+      }
+    },
+  }),
+
+  getCustomers: tool({
+    description: 'Get a list of customers from QuickBooks. Useful for finding customer IDs when creating invoices.',
+    parameters: z.object({
+      limit: z.number().optional().describe('Maximum number of customers to return (default: 20)'),
+      active: z.boolean().optional().describe('Filter by active customers only (default: true)')
+    }),
+    execute: async ({ limit = 20, active = true }) => {
+      try {
+        let query = 'SELECT * FROM Customer';
+        if (active) {
+          query += ' WHERE Active = true';
+        }
+        query += ` ORDER BY Name ASC MAXRESULTS ${limit}`;
+
+        const result = await makeInternalAPICall(`/query?query=${encodeURIComponent(query)}`);
+        const customers = result.QueryResponse?.Customer || [];
+
+        return {
+          success: true,
+          count: customers.length,
+          customers: customers.map(customer => ({
+            id: customer.Id,
+            name: customer.Name,
+            companyName: customer.CompanyName,
+            email: customer.PrimaryEmailAddr?.Address,
+            phone: customer.PrimaryPhone?.FreeFormNumber,
+            active: customer.Active
+          }))
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: 'Failed to fetch customers: ' + error.message
+        };
+      }
+    },
+  }),
+
+  getCompanyInfo: tool({
+    description: 'Get company information from QuickBooks including company name, address, and basic details.',
+    parameters: z.object({}),
+    execute: async () => {
+      try {
+        const result = await makeInternalAPICall('/companyinfo/1');
+        const company = result.QueryResponse?.CompanyInfo?.[0];
+
+        if (!company) {
+          return {
+            success: false,
+            error: 'Company information not found'
+          };
+        }
+
+        return {
+          success: true,
+          company: {
+            name: company.CompanyName,
+            legalName: company.LegalName,
+            address: company.CompanyAddr ? {
+              line1: company.CompanyAddr.Line1,
+              city: company.CompanyAddr.City,
+              state: company.CompanyAddr.CountrySubDivisionCode,
+              postalCode: company.CompanyAddr.PostalCode,
+              country: company.CompanyAddr.Country
+            } : null,
+            phone: company.PrimaryPhone?.FreeFormNumber,
+            email: company.Email?.Address,
+            website: company.WebAddr?.URI
+          }
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: 'Failed to fetch company info: ' + error.message
+        };
+      }
+    },
+  }),
+
+  searchInvoices: tool({
+    description: 'Search invoices using natural language criteria. Can search by customer name, amount ranges, dates, or status.',
+    parameters: z.object({
+      searchQuery: z.string().describe('Search criteria (e.g., "unpaid invoices", "invoices over $1000", "invoices from last month")')
+    }),
+    execute: async ({ searchQuery }) => {
+      try {
+        // Simple query parsing - in a real implementation, you'd use more sophisticated NLP
+        let query = 'SELECT * FROM Invoice';
+        const conditions = [];
+        
+        if (searchQuery.toLowerCase().includes('unpaid')) {
+          conditions.push('Balance > 0');
+        }
+        
+        if (searchQuery.toLowerCase().includes('paid')) {
+          conditions.push('Balance = 0');
+        }
+        
+        // Extract amount ranges
+        const amountMatch = searchQuery.match(/(\$|over|above|more than)\s*(\d+)/i);
+        if (amountMatch) {
+          const amount = amountMatch[2];
+          conditions.push(`TotalAmt > ${amount}`);
+        }
+        
+        if (conditions.length > 0) {
+          query += ' WHERE ' + conditions.join(' AND ');
+        }
+        
+        query += ' ORDER BY TxnDate DESC MAXRESULTS 50';
+        
+        const result = await makeInternalAPICall(`/query?query=${encodeURIComponent(query)}`);
+        const invoices = result.QueryResponse?.Invoice || [];
+
+        return {
+          success: true,
+          searchQuery: searchQuery,
+          count: invoices.length,
+          invoices: invoices.map(inv => ({
+            id: inv.Id,
+            number: inv.DocNumber,
+            customer: inv.CustomerRef?.name || 'Unknown',
+            amount: inv.TotalAmt,
+            balance: inv.Balance,
+            status: parseFloat(inv.Balance) > 0 ? 'unpaid' : 'paid',
+            date: inv.TxnDate,
+            dueDate: inv.DueDate
+          }))
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: 'Failed to search invoices: ' + error.message
+        };
+      }
+    },
+  }),
+
+  analyzeInvoices: tool({
+    description: 'Analyze invoice data to provide business insights like total revenue, unpaid amounts, overdue invoices, and customer analysis.',
+    parameters: z.object({
+      analysisType: z.enum(['revenue', 'unpaid', 'overdue', 'customer_summary', 'all']).describe('Type of analysis to perform')
+    }),
+    execute: async ({ analysisType }) => {
+      try {
+        // Get recent invoices for analysis
+        const result = await makeInternalAPICall('/query?query=' + encodeURIComponent('SELECT * FROM Invoice ORDER BY TxnDate DESC MAXRESULTS 100'));
+        const invoices = result.QueryResponse?.Invoice || [];
+
+        const analysis = {
+          success: true,
+          analysisType: analysisType,
+          period: 'Last 100 invoices',
+          data: {}
+        };
+
+        if (analysisType === 'revenue' || analysisType === 'all') {
+          const totalRevenue = invoices.reduce((sum, inv) => sum + parseFloat(inv.TotalAmt || 0), 0);
+          const paidRevenue = invoices.reduce((sum, inv) => {
+            return parseFloat(inv.Balance || 0) === 0 ? sum + parseFloat(inv.TotalAmt || 0) : sum;
+          }, 0);
+          
+          analysis.data.revenue = {
+            total: totalRevenue,
+            paid: paidRevenue,
+            pending: totalRevenue - paidRevenue,
+            averageInvoice: invoices.length > 0 ? totalRevenue / invoices.length : 0
+          };
+        }
+
+        if (analysisType === 'unpaid' || analysisType === 'all') {
+          const unpaidInvoices = invoices.filter(inv => parseFloat(inv.Balance || 0) > 0);
+          const totalUnpaid = unpaidInvoices.reduce((sum, inv) => sum + parseFloat(inv.Balance || 0), 0);
+          
+          analysis.data.unpaid = {
+            count: unpaidInvoices.length,
+            totalAmount: totalUnpaid,
+            invoices: unpaidInvoices.slice(0, 10).map(inv => ({
+              id: inv.Id,
+              number: inv.DocNumber,
+              customer: inv.CustomerRef?.name,
+              amount: inv.Balance,
+              dueDate: inv.DueDate
+            }))
+          };
+        }
+
+        if (analysisType === 'overdue' || analysisType === 'all') {
+          const today = new Date();
+          const overdueInvoices = invoices.filter(inv => {
+            if (parseFloat(inv.Balance || 0) <= 0) return false;
+            if (!inv.DueDate) return false;
+            return new Date(inv.DueDate) < today;
+          });
+
+          analysis.data.overdue = {
+            count: overdueInvoices.length,
+            totalAmount: overdueInvoices.reduce((sum, inv) => sum + parseFloat(inv.Balance || 0), 0),
+            invoices: overdueInvoices.slice(0, 10).map(inv => ({
+              id: inv.Id,
+              number: inv.DocNumber,
+              customer: inv.CustomerRef?.name,
+              amount: inv.Balance,
+              dueDate: inv.DueDate,
+              daysOverdue: Math.ceil((today - new Date(inv.DueDate)) / (1000 * 60 * 60 * 24))
+            }))
+          };
+        }
+
+        return analysis;
+      } catch (error) {
+        return {
+          success: false,
+          error: 'Failed to analyze invoices: ' + error.message
+        };
+      }
+    },
+  })
+};
 
 // Middleware
 app.use(cors());
@@ -433,7 +853,7 @@ app.get('/api/invoices', async (req, res) => {
       query += ' WHERE ' + conditions.join(' AND ');
     }
     
-    query += ` ORDER BY TxnDate DESC MAXRESULTS ${limit} STARTPOSITION ${offset}`;
+    query += ` ORDER BY DocNumber ASC MAXRESULTS ${limit} STARTPOSITION ${offset}`;
 
     const response = await axios.get(
       `${QUICKBOOKS_CONFIG.baseUrl}/v3/company/${tokens.realmId}/query?query=${encodeURIComponent(query)}`,
@@ -1334,34 +1754,174 @@ app.post('/api/ai/analyze-invoice/:id', async (req, res) => {
   }
 });
 
-// Chat interface endpoint (placeholder for AI chat)
+// AI Chat endpoint with actual AI and tool integration
 app.post('/api/ai/chat', async (req, res) => {
   try {
-    const { message, sessionId, context } = req.body;
+    const { message, sessionId } = req.body;
 
     if (!message) {
       return res.status(400).json({ error: 'Message is required' });
     }
 
-    // Placeholder chat response - to be replaced with Vercel AI SDK streaming
-    const chatResponse = {
+    // Check if user is authenticated with QuickBooks
+    const tokens = tokenCache.get('quickbooks_tokens');
+    if (!tokens) {
+      return res.json({
+        sessionId: sessionId || 'default',
+        message: message,
+        response: 'I need to connect to QuickBooks first to help you with invoice management. Please visit /auth/quickbooks to authenticate.',
+        authRequired: true,
+        authUrl: '/auth/quickbooks'
+      });
+    }
+
+    console.log('Processing AI chat request:', { message, sessionId });
+
+    // Use OpenAI with tools
+    const result = await generateText({
+      model: openai('gpt-4o-mini'),
+      tools: invoiceTools,
+      maxSteps: 5,
+      messages: [
+        {
+          role: 'system',
+          content: `You are an AI assistant for QuickBooks invoice management. You help users manage their invoices, customers, and business analytics through natural language.
+
+Key capabilities:
+- Get and search invoices
+- Analyze invoice data and provide business insights
+- Get customer information
+- Retrieve company details
+- Answer questions about business performance
+
+Always be helpful, professional, and provide actionable insights. When showing financial data, format amounts as currency (e.g., $1,234.56).
+
+Current context: User is authenticated with QuickBooks and ready to use all features.`
+        },
+        {
+          role: 'user',
+          content: message
+        }
+      ]
+    });
+
+    console.log('AI response generated:', { 
+      text: result.text.substring(0, 100) + '...', 
+      toolCallCount: result.steps?.length || 0 
+    });
+
+    const response = {
       sessionId: sessionId || 'default',
       message: message,
-      response: 'AI chat interface ready for Vercel AI SDK integration. You can ask me about your invoices, customers, and business analytics.',
-      suggestions: [
-        'Show me overdue invoices',
-        'Create a new invoice',
-        'Analyze my top customers',
-        'What\'s my revenue trend?'
-      ],
+      response: result.text,
+      toolCalls: result.steps?.map(step => ({
+        toolName: step.toolCalls?.[0]?.toolName,
+        args: step.toolCalls?.[0]?.args,
+        result: step.toolResults?.[0]?.result
+      })).filter(Boolean) || [],
       timestamp: new Date().toISOString(),
-      aiReady: true
+      suggestions: [
+        'Show me recent invoices',
+        'What are my unpaid invoices?',
+        'Analyze my revenue',
+        'Get customer list',
+        'Show overdue invoices'
+      ]
     };
 
-    res.json(chatResponse);
+    res.json(response);
   } catch (error) {
     console.error('AI chat error:', error.message);
-    res.status(500).json({ error: 'Failed to process chat message' });
+    
+    // Handle specific AI SDK errors
+    if (error.name === 'NoSuchToolError') {
+      res.status(400).json({ error: 'Invalid tool request' });
+    } else if (error.name === 'InvalidToolArgumentsError') {
+      res.status(400).json({ error: 'Invalid tool arguments' });
+    } else if (error.name === 'ToolExecutionError') {
+      res.status(500).json({ error: 'Tool execution failed: ' + error.message });
+    } else {
+      res.status(500).json({ error: 'Failed to process chat message' });
+    }
+  }
+});
+
+// AI Chat streaming endpoint for real-time responses
+app.post('/api/ai/chat/stream', async (req, res) => {
+  try {
+    const { message, sessionId } = req.body;
+
+    if (!message) {
+      return res.status(400).json({ error: 'Message is required' });
+    }
+
+    // Check if user is authenticated with QuickBooks
+    const tokens = tokenCache.get('quickbooks_tokens');
+    if (!tokens) {
+      return res.json({
+        sessionId: sessionId || 'default',
+        message: message,
+        response: 'I need to connect to QuickBooks first to help you with invoice management. Please visit /auth/quickbooks to authenticate.',
+        authRequired: true,
+        authUrl: '/auth/quickbooks'
+      });
+    }
+
+    console.log('Processing streaming AI chat request:', { message, sessionId });
+
+    // Set up SSE headers
+    res.writeHead(200, {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Headers': 'Cache-Control'
+    });
+
+    try {
+      // Use OpenAI with streaming
+      const stream = streamText({
+        model: openai('gpt-4o-mini'),
+        tools: invoiceTools,
+        maxSteps: 5,
+        messages: [
+          {
+            role: 'system',
+            content: `You are an AI assistant for QuickBooks invoice management. You help users manage their invoices, customers, and business analytics through natural language.
+
+Key capabilities:
+- Get and search invoices
+- Analyze invoice data and provide business insights
+- Get customer information
+- Retrieve company details
+- Answer questions about business performance
+
+Always be helpful, professional, and provide actionable insights. When showing financial data, format amounts as currency (e.g., $1,234.56).
+
+Current context: User is authenticated with QuickBooks and ready to use all features.`
+          },
+          {
+            role: 'user',
+            content: message
+          }
+        ]
+      });
+
+      // Handle streaming response
+      for await (const chunk of stream.textStream) {
+        res.write(chunk);
+      }
+
+      res.end();
+    } catch (streamError) {
+      console.error('Streaming error:', streamError.message);
+      res.write(`Error: ${streamError.message}`);
+      res.end();
+    }
+
+  } catch (error) {
+    console.error('AI streaming chat error:', error.message);
+    res.status(500).json({ error: 'Failed to process streaming chat message' });
   }
 });
 
