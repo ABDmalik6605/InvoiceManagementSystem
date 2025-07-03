@@ -32,7 +32,7 @@ const invoiceTools = {
           query += ' WHERE ' + conditions.join(' AND ');
         }
         
-        query += ` ORDER BY TxnDate DESC MAXRESULTS ${limit}`;
+        query += ` ORDER BY DocNumber ASC MAXRESULTS ${limit}`;
         
         const result = await makeInternalAPICall(`/query?query=${encodeURIComponent(query)}`);
         
@@ -464,7 +464,7 @@ const invoiceTools = {
           query += ' WHERE ' + conditions.join(' AND ');
         }
         
-        query += ' ORDER BY TxnDate DESC MAXRESULTS 50';
+        query += ' ORDER BY DocNumber ASC MAXRESULTS 50';
         
         const result = await makeInternalAPICall(`/query?query=${encodeURIComponent(query)}`);
         const invoices = result.QueryResponse?.Invoice || [];
@@ -501,7 +501,7 @@ const invoiceTools = {
     execute: async ({ analysisType }) => {
       try {
         // Get recent invoices for analysis
-        const result = await makeInternalAPICall('/query?query=' + encodeURIComponent('SELECT * FROM Invoice ORDER BY TxnDate DESC MAXRESULTS 100'));
+        const result = await makeInternalAPICall('/query?query=' + encodeURIComponent('SELECT * FROM Invoice ORDER BY DocNumber ASC MAXRESULTS 100'));
         const invoices = result.QueryResponse?.Invoice || [];
 
         const analysis = {
