@@ -155,54 +155,241 @@ const invoiceTools = {
   }),
 
   createInvoice: tool({
-    description: 'Create a new invoice for a customer. Requires customer ID and line items with amounts.',
+    description: 'Create a new invoice for an existing customer. Requires either customer name OR customer ID. Will NOT create customers - customer must already exist in QuickBooks.',
     parameters: z.object({
-      customerId: z.string().describe('The QuickBooks customer ID'),
+      customerName: z.string().optional().describe('Customer name (must exist in QuickBooks)'),
+      customerId: z.string().optional().describe('Specific QuickBooks customer ID (must exist in QuickBooks)'),
+      amount: z.number().optional().describe('Total invoice amount (defaults to $500 if not specified)'),
+      description: z.string().optional().describe('What is this invoice for? (e.g., "Web design services", "Consulting")'),
+      dueDate: z.string().optional().describe('Due date in YYYY-MM-DD format (defaults to exactly 1 month from today)'),
       lineItems: z.array(z.object({
         amount: z.number().describe('Line item amount'),
         description: z.string().optional().describe('Line item description'),
         quantity: z.number().optional().describe('Quantity (default: 1)')
-      })).describe('Array of line items for the invoice'),
-      dueDate: z.string().optional().describe('Due date in YYYY-MM-DD format'),
+      })).optional().describe('Specific line items (optional - will create defaults if not provided)')
     }),
-    execute: async ({ customerId, lineItems, dueDate }) => {
+    execute: async ({ customerName, customerId, amount, description, dueDate, lineItems }) => {
       try {
+        console.log('🔨 Creating invoice with:', { customerName, customerId, amount, description, dueDate, lineItems });
+        
+        // STEP 1: Validate input - must have either customerName OR customerId
+        if (!customerName && !customerId) {
+          return {
+            success: false,
+            error: 'Either customer name or customer ID is required to create an invoice.'
+          };
+        }
+        
+        // STEP 2: Find existing customer (NO auto-creation)
+        let finalCustomerId = customerId;
+        let customerNameForInvoice = customerName;
+        
+        if (!finalCustomerId && customerName) {
+          // Search for customer by name
+          try {
+            const customerQuery = `SELECT * FROM Customer WHERE DisplayName = '${customerName}' MAXRESULTS 1`;
+            const customerResult = await makeInternalAPICall(`/query?query=${encodeURIComponent(customerQuery)}`);
+            const foundCustomer = customerResult.QueryResponse?.Customer?.[0];
+            
+            if (foundCustomer) {
+              finalCustomerId = foundCustomer.Id;
+              customerNameForInvoice = foundCustomer.DisplayName || foundCustomer.Name;
+              console.log(`✅ Found existing customer: ${customerNameForInvoice} (ID: ${finalCustomerId})`);
+            } else {
+              console.log(`❌ Customer "${customerName}" not found`);
+              return {
+                success: false,
+                error: `Customer "${customerName}" does not exist in QuickBooks. Please create the customer first or use an existing customer.`
+              };
+            }
+          } catch (error) {
+            console.log('⚠️ Customer search failed:', error.message);
+            return {
+              success: false,
+              error: `Failed to search for customer "${customerName}": ${error.message}`
+            };
+          }
+        } else if (finalCustomerId && !customerName) {
+          // If only ID provided, get customer name for display
+          try {
+            const customerResult = await makeInternalAPICall(`/customer/${finalCustomerId}`);
+            const customer = customerResult.QueryResponse?.Customer?.[0];
+            if (customer) {
+              customerNameForInvoice = customer.DisplayName || customer.Name;
+              console.log(`✅ Found customer by ID: ${customerNameForInvoice} (ID: ${finalCustomerId})`);
+            } else {
+              return {
+                success: false,
+                error: `Customer with ID "${customerId}" does not exist in QuickBooks.`
+              };
+            }
+          } catch (error) {
+            console.log('⚠️ Customer lookup by ID failed:', error.message);
+            return {
+              success: false,
+              error: `Customer with ID "${customerId}" does not exist in QuickBooks.`
+            };
+          }
+        }
+        
+        // STEP 3: Determine line items
+        let finalLineItems = lineItems;
+        
+        if (!finalLineItems || finalLineItems.length === 0) {
+          // Create smart default line items
+          const invoiceAmount = amount || 500; // Default $500 if no amount specified
+          const itemDescription = description || 'Professional Services';
+          
+          finalLineItems = [{
+            amount: invoiceAmount,
+            description: itemDescription,
+            quantity: 1
+          }];
+          
+          console.log(`📝 Created default line items: ${itemDescription} - $${invoiceAmount}`);
+        }
+        
+        // STEP 4: Determine dates
+        const currentDate = new Date();
+        const transactionDate = currentDate.toISOString().split('T')[0]; // Today's date
+        
+        let finalDueDate = dueDate;
+        if (!finalDueDate) {
+          // Default to exactly 1 month from today
+          const dueDateObj = new Date();
+          dueDateObj.setMonth(dueDateObj.getMonth() + 1);
+          finalDueDate = dueDateObj.toISOString().split('T')[0]; // YYYY-MM-DD format
+          console.log(`📅 Using default due date (1 month from today): ${finalDueDate}`);
+        }
+        
+        // STEP 5: Build QuickBooks invoice data
         const invoiceData = {
-          Line: lineItems.map((item, index) => ({
+          Line: finalLineItems.map((item, index) => ({
             Id: (index + 1).toString(),
             Amount: item.amount,
-            Description: item.description || `Line item ${index + 1}`,
+            Description: item.description || `Item ${index + 1}`,
             DetailType: 'SalesItemLineDetail',
             SalesItemLineDetail: {
               Qty: item.quantity || 1
             }
           })),
           CustomerRef: {
-            value: customerId
-          }
+            value: finalCustomerId
+          },
+          TxnDate: transactionDate, // Set transaction date to today
+          DueDate: finalDueDate
         };
-
-        if (dueDate) {
-          invoiceData.DueDate = dueDate;
-        }
-
+        
+        console.log('📤 Sending invoice data to QuickBooks:', JSON.stringify(invoiceData, null, 2));
+        
+        // STEP 6: Create the invoice
         const result = await makeInternalAPICall('/invoice', 'POST', invoiceData);
-        const invoice = result.QueryResponse?.Invoice?.[0];
-
+        let invoice = result.QueryResponse?.Invoice?.[0];
+        if (!invoice && result.Invoice) {
+          invoice = result.Invoice;
+        }
+        if (!invoice) {
+          throw new Error('Invoice creation returned no data');
+        }
+        
+        console.log('✅ Invoice created successfully:', invoice.DocNumber);
+        
+        const totalAmount = finalLineItems.reduce((sum, item) => sum + item.amount, 0);
+        
         return {
           success: true,
-          message: 'Invoice created successfully',
+          message: `✅ Invoice #${invoice.DocNumber} for ${customerNameForInvoice} was created successfully!\n\nAmount: $${invoice.TotalAmt || totalAmount}\nDue Date: ${finalDueDate}\nTransaction Date: ${transactionDate}`,
           invoice: {
             id: invoice.Id,
             number: invoice.DocNumber,
-            amount: invoice.TotalAmt,
-            customer: invoice.CustomerRef?.name
-          }
+            amount: invoice.TotalAmt || totalAmount,
+            customer: customerNameForInvoice,
+            transactionDate: transactionDate,
+            dueDate: finalDueDate,
+            lineItems: finalLineItems
+          },
+          summary: `Created invoice #${invoice.DocNumber} for ${customerNameForInvoice}. Amount: $${invoice.TotalAmt || totalAmount}, Transaction Date: ${transactionDate}, Due Date: ${finalDueDate}. Items: ${finalLineItems.map(item => item.description).join(', ')}.`
         };
+        
       } catch (error) {
+        console.log('❌ Invoice creation failed:', error.message);
         return {
           success: false,
           error: 'Failed to create invoice: ' + error.message
+        };
+      }
+    },
+  }),
+
+  createCustomer: tool({
+    description: 'Create a new customer quickly and easily. Can use provided information or smart defaults.',
+    parameters: z.object({
+      name: z.string().describe('Customer name (required)'),
+      email: z.string().optional().describe('Customer email address'),
+      phone: z.string().optional().describe('Customer phone number'),
+      address: z.string().optional().describe('Customer address'),
+      company: z.string().optional().describe('Company name if different from customer name')
+    }),
+    execute: async ({ name, email, phone, address, company }) => {
+      try {
+        console.log('👤 Creating customer:', { name, email, phone, address, company });
+        
+        const customerData = {
+          Name: name,
+          Active: true
+        };
+        
+        if (email) {
+          customerData.PrimaryEmailAddr = {
+            Address: email
+          };
+        }
+        
+        if (phone) {
+          customerData.PrimaryPhone = {
+            FreeFormNumber: phone
+          };
+        }
+        
+        if (company && company !== name) {
+          customerData.CompanyName = company;
+        }
+        
+        if (address) {
+          customerData.BillAddr = {
+            Line1: address
+          };
+        }
+        
+        console.log('📤 Sending customer data to QuickBooks:', JSON.stringify(customerData, null, 2));
+        
+        const result = await makeInternalAPICall('/customer', 'POST', customerData);
+        const customer = result.QueryResponse?.Customer?.[0];
+        
+        if (!customer) {
+          throw new Error('Customer creation returned no data');
+        }
+        
+        console.log('✅ Customer created successfully:', customer.Name);
+        
+        return {
+          success: true,
+          message: `Customer "${customer.Name}" created successfully!`,
+          customer: {
+            id: customer.Id,
+            name: customer.Name,
+            email: customer.PrimaryEmailAddr?.Address,
+            phone: customer.PrimaryPhone?.FreeFormNumber,
+            active: customer.Active
+          },
+          summary: `Created customer: ${customer.Name}${email ? ` (${email})` : ''}. You can now create invoices for this customer.`
+        };
+        
+      } catch (error) {
+        console.log('❌ Customer creation failed:', error.message);
+        return {
+          success: false,
+          error: 'Failed to create customer: ' + error.message
         };
       }
     },
@@ -582,6 +769,176 @@ const invoiceTools = {
         return {
           success: false,
           error: 'Failed to load invoices: ' + error.message
+        };
+      }
+    },
+  }),
+
+  updateInvoice: tool({
+    description: 'Update an existing invoice by invoice number or ID. You can change the amount, due date, description, or line items. Invoice must already exist in QuickBooks.',
+    parameters: z.object({
+      invoiceId: z.string().optional().describe('The QuickBooks invoice ID (preferred)'),
+      invoiceNumber: z.string().optional().describe('The invoice number (DocNumber) if ID is not known'),
+      amount: z.number().optional().describe('New total amount for the invoice'),
+      dueDate: z.string().optional().describe('New due date in YYYY-MM-DD format'),
+      description: z.string().optional().describe('New description for the invoice or line item'),
+      lineItems: z.array(z.object({
+        amount: z.number().describe('Line item amount'),
+        description: z.string().optional().describe('Line item description'),
+        quantity: z.number().optional().describe('Quantity (default: 1)')
+      })).optional().describe('Replace all line items with these'),
+    }),
+    execute: async ({ invoiceId, invoiceNumber, amount, dueDate, description, lineItems }) => {
+      try {
+        // STEP 1: Find the invoice (get fresh data)
+        let invoice;
+        if (invoiceId) {
+          const result = await makeInternalAPICall(`/invoice/${invoiceId}`);
+          invoice = result.QueryResponse?.Invoice?.[0] || result.Invoice;
+        } else if (invoiceNumber) {
+          const query = `SELECT * FROM Invoice WHERE DocNumber = '${invoiceNumber}' MAXRESULTS 1`;
+          const result = await makeInternalAPICall(`/query?query=${encodeURIComponent(query)}`);
+          invoice = result.QueryResponse?.Invoice?.[0];
+        } else {
+          return { success: false, error: 'You must provide either invoiceId or invoiceNumber.' };
+        }
+        if (!invoice) {
+          return { success: false, error: 'Invoice not found in QuickBooks.' };
+        }
+        
+        console.log(`📋 Current invoice data: ID=${invoice.Id}, DocNumber=${invoice.DocNumber}, DueDate=${invoice.DueDate}, SyncToken=${invoice.SyncToken}`);
+
+        // STEP 2: Validate inputs before making changes
+        
+        // Validate amount (if updating amount, ensure it's positive)
+        if (amount !== undefined) {
+          if (amount < 0) {
+            return { success: false, error: `Invalid amount: $${amount}. Invoice amount cannot be negative.` };
+          }
+          if (amount === 0) {
+            return { success: false, error: `Invalid amount: $${amount}. Invoice amount must be greater than 0.` };
+          }
+        }
+
+        // STEP 3: Validate and format due date if provided
+        if (dueDate) {
+          // Validate date format (YYYY-MM-DD)
+          const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+          if (!dateRegex.test(dueDate)) {
+            // Try to parse and reformat common date formats
+            try {
+              // Handle common date formats like "July 29, 2025", "Jul 29, 2025", "7/29/2025", etc.
+              let parsedDate;
+              
+              // For month names like "July 29, 2025" or "Jul 29, 2025"
+              const monthNameRegex = /^(\w+)\s+(\d{1,2}),?\s+(\d{4})$/i;
+              const monthNameMatch = dueDate.match(monthNameRegex);
+              
+              if (monthNameMatch) {
+                const [, monthStr, day, year] = monthNameMatch;
+                const monthMap = {
+                  'january': 0, 'jan': 0, 'february': 1, 'feb': 1, 'march': 2, 'mar': 2,
+                  'april': 3, 'apr': 3, 'may': 4, 'june': 5, 'jun': 5,
+                  'july': 6, 'jul': 6, 'august': 7, 'aug': 7, 'september': 8, 'sep': 8,
+                  'october': 9, 'oct': 9, 'november': 10, 'nov': 10, 'december': 11, 'dec': 11
+                };
+                const monthIndex = monthMap[monthStr.toLowerCase()];
+                if (monthIndex !== undefined) {
+                  // Use UTC to avoid timezone issues
+                  parsedDate = new Date(Date.UTC(parseInt(year), monthIndex, parseInt(day)));
+                  dueDate = parsedDate.toISOString().split('T')[0]; // Convert to YYYY-MM-DD
+                  console.log(`📅 Parsed "${monthNameMatch[0]}" to: ${dueDate}`);
+                } else {
+                  throw new Error('Invalid month name');
+                }
+              } else {
+                // Try regular date parsing as fallback
+                parsedDate = new Date(dueDate);
+                if (isNaN(parsedDate.getTime())) {
+                  return { success: false, error: `Invalid date format: "${dueDate}". Please use formats like "July 29, 2025" or "2025-07-29".` };
+                }
+                // Use UTC to avoid timezone shifts
+                const year = parsedDate.getFullYear();
+                const month = parsedDate.getMonth();
+                const day = parsedDate.getDate();
+                const utcDate = new Date(Date.UTC(year, month, day));
+                dueDate = utcDate.toISOString().split('T')[0]; // Convert to YYYY-MM-DD
+                console.log(`📅 Reformatted date to: ${dueDate}`);
+              }
+            } catch (error) {
+              return { success: false, error: `Invalid date format: "${dueDate}". Please use formats like "July 29, 2025" or "2025-07-29".` };
+            }
+          }
+          
+          // Validate due date is not before transaction date
+          const transactionDate = invoice.TxnDate;
+          if (transactionDate && dueDate < transactionDate) {
+            return { 
+              success: false, 
+              error: `Invalid due date: ${dueDate}. Due date cannot be before the transaction date (${transactionDate}).` 
+            };
+          }
+        }
+
+        // STEP 4: Prepare updated invoice data
+        const updatedInvoice = { 
+          ...invoice, 
+          sparse: true,
+          Id: invoice.Id,
+          SyncToken: invoice.SyncToken
+        };
+        if (amount || lineItems) {
+          // If lineItems provided, use them; else update first line item amount
+          if (lineItems && lineItems.length > 0) {
+            updatedInvoice.Line = lineItems.map((item, idx) => ({
+              Id: (idx + 1).toString(),
+              Amount: item.amount,
+              Description: item.description || description || `Item ${idx + 1}`,
+              DetailType: 'SalesItemLineDetail',
+              SalesItemLineDetail: {
+                Qty: item.quantity || 1
+              }
+            }));
+          } else if (amount) {
+            // Update amount on first line item
+            if (updatedInvoice.Line && updatedInvoice.Line.length > 0) {
+              updatedInvoice.Line[0].Amount = amount;
+              if (description) updatedInvoice.Line[0].Description = description;
+            }
+          }
+        }
+        if (dueDate) updatedInvoice.DueDate = dueDate;
+        if (description && (!lineItems || lineItems.length === 0)) {
+          // Update description on first line item if not already set above
+          if (updatedInvoice.Line && updatedInvoice.Line.length > 0) {
+            updatedInvoice.Line[0].Description = description;
+          }
+        }
+
+        // STEP 5: Update the invoice in QuickBooks
+        console.log('🔄 Updating invoice with data:', JSON.stringify(updatedInvoice, null, 2));
+        const result = await makeInternalAPICall(`/invoice/${invoice.Id}`, 'PUT', updatedInvoice);
+        let updated = result.QueryResponse?.Invoice?.[0] || result.Invoice;
+        if (!updated) {
+          throw new Error('Invoice update returned no data');
+        }
+        
+        // Format success message with changes made
+        let changes = [];
+        if (amount) changes.push(`Amount: $${amount}`);
+        if (dueDate) changes.push(`Due Date: ${dueDate}`);
+        if (description) changes.push(`Description: ${description}`);
+        const changesText = changes.length > 0 ? ` (${changes.join(', ')})` : '';
+        
+        return {
+          success: true,
+          message: `✅ Invoice #${updated.DocNumber} was updated successfully!${changesText}`,
+          invoice: updated
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: 'Failed to update invoice: ' + error.message
         };
       }
     },

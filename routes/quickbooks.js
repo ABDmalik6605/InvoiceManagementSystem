@@ -212,8 +212,39 @@ router.get('/query', async (req, res) => {
   }
 });
 
+// Create customer
+router.post('/customer', async (req, res) => {
+  try {
+    console.log('🔨 Creating customer with data:', JSON.stringify(req.body, null, 2));
+    
+    const accessToken = await getValidAccessToken();
+    const tokens = tokenCache.get('quickbooks_tokens');
+
+    const response = await axios.post(
+      `${QUICKBOOKS_CONFIG.baseUrl}/v3/company/${tokens.realmId}/customer`,
+      req.body,
+      {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        }
+      }
+    );
+
+    console.log('✅ Customer created:', response.data);
+    res.json(response.data);
+  } catch (error) {
+    console.error('❌ Create customer error:', error.response?.data || error.message);
+    res.status(500).json({ 
+      error: 'Failed to create customer',
+      details: error.response?.data || error.message 
+    });
+  }
+});
+
 // Create invoice
-router.post('/invoices', async (req, res) => {
+router.post('/invoice', async (req, res) => {
   try {
     const accessToken = await getValidAccessToken();
     const tokens = tokenCache.get('quickbooks_tokens');
@@ -239,6 +270,40 @@ router.post('/invoices', async (req, res) => {
     res.status(500).json({ error: 'Failed to create invoice' });
   }
 });
+
+// Update invoice (PUT endpoint that converts to POST for QuickBooks)
+router.put('/invoice/:id', async (req, res) => {
+  try {
+    console.log('🔄 PUT invoice update received for ID:', req.params.id);
+    console.log('🔄 Update data:', JSON.stringify(req.body, null, 2));
+    
+    const accessToken = await getValidAccessToken();
+    const tokens = tokenCache.get('quickbooks_tokens');
+
+    // QuickBooks requires POST for updates, not PUT
+    const response = await axios.post(
+      `${QUICKBOOKS_CONFIG.baseUrl}/v3/company/${tokens.realmId}/invoice`,
+      req.body,
+      {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        }
+      }
+    );
+
+    console.log('✅ Invoice updated successfully:', response.data);
+    res.json(response.data);
+  } catch (error) {
+    console.error('❌ Update invoice error:', error.response?.data || error.message);
+    res.status(500).json({ 
+      error: 'Failed to update invoice',
+      details: error.response?.data || error.message 
+    });
+  }
+});
+
 
 // Delete invoice (void)
 router.delete('/invoices/:id', async (req, res) => {

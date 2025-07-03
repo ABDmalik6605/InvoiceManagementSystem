@@ -27,9 +27,19 @@ async function makeInternalAPICall(endpoint, method = 'GET', data = null) {
     const baseURL = `${QUICKBOOKS_CONFIG.baseUrl}/v3/company/${tokens.realmId}`;
     console.log(`🏗️ Base URL: ${baseURL}`);
     
+    // Special handling for PUT requests to /invoice/:id - QuickBooks only accepts POST for updates
+    let actualMethod = method;
+    let actualEndpoint = endpoint;
+    
+    if (method === 'PUT' && endpoint.match(/^\/invoice\/\d+$/)) {
+      console.log(`🔄 Converting PUT to POST for QuickBooks invoice update`);
+      actualMethod = 'POST';
+      actualEndpoint = '/invoice'; // QuickBooks expects POST to /invoice for updates
+    }
+    
     const config = {
-      method,
-      url: endpoint.startsWith('http') ? endpoint : `${baseURL}${endpoint}`,
+      method: actualMethod,
+      url: actualEndpoint.startsWith('http') ? actualEndpoint : `${baseURL}${actualEndpoint}`,
       headers: {
         'Authorization': `Bearer ${accessToken}`,
         'Accept': 'application/json'
@@ -38,7 +48,7 @@ async function makeInternalAPICall(endpoint, method = 'GET', data = null) {
 
     console.log(`🌐 Full URL: ${config.url}`);
 
-    if (data && (method === 'POST' || method === 'PUT')) {
+    if (data && (actualMethod === 'POST' || actualMethod === 'PUT')) {
       config.data = data;
       config.headers['Content-Type'] = 'application/json';
     }

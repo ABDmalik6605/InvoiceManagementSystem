@@ -114,7 +114,7 @@ const ChatPanel = ({ onInvoiceUpdate, onInvoiceSelect, onOpenInvoiceSlider }) =>
       let invoiceSelected = false;
       if (response.toolCalls && response.toolCalls.length > 0) {
         const hasInvoiceOperation = response.toolCalls.some(call => 
-          ['getInvoices', 'createInvoice', 'getInvoiceById', 'getInvoiceByNumber', 'deleteInvoice'].includes(call.toolName)
+          ['getInvoices', 'createInvoice', 'getInvoiceById', 'getInvoiceByNumber', 'deleteInvoice', 'updateInvoice'].includes(call.toolName)
         );
         
         if (hasInvoiceOperation) {
