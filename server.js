@@ -10,6 +10,7 @@ const { errorHandler } = require('./middleware/error');
 const authRoutes = require('./routes/auth');
 const quickbooksRoutes = require('./routes/quickbooks');
 const aiRoutes = require('./routes/ai');
+const emailRoutes = require('./routes/email');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -24,6 +25,7 @@ app.use(sessionMiddleware);
 app.use('/auth', authRoutes);
 app.use('/api', quickbooksRoutes);
 app.use('/api/ai', aiRoutes);
+app.use('/api/email', emailRoutes);
 
 // Root endpoint
 app.get('/', (req, res) => {
@@ -54,6 +56,11 @@ app.get('/', (req, res) => {
       ai: {
         chat: 'POST /api/ai/chat',
         chatStream: 'POST /api/ai/chat/stream'
+      },
+      email: {
+        sendInvoice: 'POST /api/email/send-invoice',
+        sendMultiple: 'POST /api/email/send-multiple-invoices',
+        testConfig: 'GET /api/email/test-config'
       }
     },
     features: [

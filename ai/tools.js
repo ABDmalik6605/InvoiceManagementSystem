@@ -942,6 +942,186 @@ const invoiceTools = {
         };
       }
     },
+  }),
+
+  emailInvoices: tool({
+    description: 'Email PDF invoices to customers using QuickBooks direct API. This generates professional QuickBooks PDF invoices and emails them using QuickBooks native email system. The AI will automatically get customer email addresses from QuickBooks or use provided email addresses. Use this when users ask to "email invoice 1039" or "send invoices to customers".',
+    parameters: z.object({
+      invoices: z.array(z.object({
+        invoiceId: z.string().optional().describe('The QuickBooks invoice ID'),
+        invoiceNumber: z.string().optional().describe('The invoice number (DocNumber)'),
+        customerEmail: z.string().optional().describe('Customer email address (if not provided, will try to get from QuickBooks customer data)')
+      })).describe('Array of invoices to email'),
+      subject: z.string().optional().describe('Custom email subject line'),
+      batchMode: z.boolean().optional().describe('Whether to send all emails at once (true) or individually (false). Default: false for single invoice, true for multiple.')
+    }),
+    execute: async ({ invoices, subject, batchMode = invoices.length > 1 }) => {
+      try {
+        console.log('📧 EMAIL INVOICES TOOL STARTED');
+        console.log('📋 Input invoices:', JSON.stringify(invoices, null, 2));
+        console.log('🔧 Batch mode:', batchMode);
+        
+        if (!invoices || invoices.length === 0) {
+          return {
+            success: false,
+            error: 'At least one invoice must be specified for emailing.'
+          };
+        }
+
+        const results = [];
+        const errors = [];
+
+        // Process each invoice
+        for (const invoiceItem of invoices) {
+          try {
+            const { invoiceId, invoiceNumber, customerEmail } = invoiceItem;
+            
+            if (!invoiceId && !invoiceNumber) {
+              errors.push({
+                invoice: 'unknown',
+                error: 'Either invoiceId or invoiceNumber must be provided'
+              });
+              continue;
+            }
+
+            // Get invoice data
+            let invoice;
+            if (invoiceId) {
+              const result = await makeInternalAPICall(`/invoice/${invoiceId}`);
+              invoice = result.QueryResponse?.Invoice?.[0] || result.Invoice;
+            } else {
+              const query = `SELECT * FROM Invoice WHERE DocNumber = '${invoiceNumber}' MAXRESULTS 1`;
+              const result = await makeInternalAPICall(`/query?query=${encodeURIComponent(query)}`);
+              invoice = result.QueryResponse?.Invoice?.[0];
+            }
+            
+            if (!invoice) {
+              errors.push({
+                invoice: invoiceNumber || invoiceId,
+                error: 'Invoice not found'
+              });
+              continue;
+            }
+
+            // Get customer email if not provided
+            let emailAddress = customerEmail;
+            if (!emailAddress) {
+              try {
+                // Try to get customer email from QuickBooks
+                const customerId = invoice.CustomerRef?.value;
+                if (customerId) {
+                  const customerResult = await makeInternalAPICall(`/customer/${customerId}`);
+                  const customer = customerResult.QueryResponse?.Customer?.[0] || customerResult.Customer;
+                  emailAddress = customer?.PrimaryEmailAddr?.Address;
+                }
+              } catch (error) {
+                console.log(`⚠️ Could not fetch customer email for invoice ${invoice.DocNumber}:`, error.message);
+              }
+            }
+
+            if (!emailAddress) {
+              errors.push({
+                invoice: invoice.DocNumber,
+                error: 'No email address found for customer. Please provide customer email address or update customer record in QuickBooks.'
+              });
+              continue;
+            }
+
+            // Create subject line if not provided
+            const customerName = invoice.CustomerRef?.name || 'Customer';
+            const defaultSubject = subject || `Invoice #${invoice.DocNumber} from your business`;
+            
+            // Prepare for emailing
+            results.push({
+              invoiceId: invoice.Id,
+              invoiceNumber: invoice.DocNumber,
+              customerEmail: emailAddress,
+              customerName: customerName,
+              subject: defaultSubject
+            });
+
+          } catch (error) {
+            errors.push({
+              invoice: invoiceItem.invoiceNumber || invoiceItem.invoiceId || 'unknown',
+              error: error.message
+            });
+          }
+        }
+
+        // Send emails
+        if (results.length === 0) {
+          return {
+            success: false,
+            error: 'No valid invoices to email',
+            errors: errors
+          };
+        }
+
+        let emailResults;
+        if (batchMode || results.length > 1) {
+          // Send multiple emails
+          const emailPayload = {
+            invoices: results.map(r => ({
+              invoiceId: r.invoiceId,
+              customerEmail: r.customerEmail,
+              subject: r.subject
+            })),
+            defaultSubject: subject
+          };
+          
+          const response = await axios.post('http://localhost:3000/api/email/send-multiple-invoices', emailPayload);
+          emailResults = response.data;
+        } else {
+          // Send single email
+          const emailPayload = {
+            invoiceId: results[0].invoiceId,
+            customerEmail: results[0].customerEmail,
+            subject: results[0].subject
+          };
+          
+          const response = await axios.post('http://localhost:3000/api/email/send-invoice', emailPayload);
+          emailResults = {
+            success: response.data.success,
+            results: [response.data],
+            summary: { successful: response.data.success ? 1 : 0, failed: response.data.success ? 0 : 1 }
+          };
+        }
+
+        // Format response
+        const successCount = emailResults.summary?.successful || (emailResults.success ? 1 : 0);
+        const failureCount = emailResults.summary?.failed || (emailResults.success ? 0 : 1);
+        
+        let message;
+        if (successCount > 0 && failureCount === 0) {
+          message = successCount === 1 
+            ? `✅ Invoice #${results[0].invoiceNumber} emailed successfully to ${results[0].customerName} (${results[0].customerEmail})`
+            : `✅ ${successCount} invoices emailed successfully`;
+        } else if (successCount > 0 && failureCount > 0) {
+          message = `⚠️ ${successCount} invoices emailed successfully, ${failureCount} failed`;
+        } else {
+          message = `❌ Failed to email ${failureCount} invoice${failureCount !== 1 ? 's' : ''}`;
+        }
+
+        return {
+          success: successCount > 0,
+          message: message,
+          results: emailResults.results || emailResults,
+          errors: [...errors, ...(emailResults.errors || [])],
+          summary: {
+            total: invoices.length,
+            successful: successCount,
+            failed: failureCount + errors.length
+          }
+        };
+
+      } catch (error) {
+        console.error('❌ Email invoices tool error:', error);
+        return {
+          success: false,
+          error: `Failed to email invoices: ${error.message}`
+        };
+      }
+    },
   })
 };
 
