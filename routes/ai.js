@@ -3,6 +3,7 @@ const { generateText, streamText } = require('ai');
 const { openai } = require('@ai-sdk/openai');
 const { tokenCache } = require('../config/cache');
 const { invoiceTools } = require('../ai/tools');
+const conversationManager = require('../config/conversations');
 
 const router = express.Router();
 
@@ -29,6 +30,9 @@ router.post('/chat', async (req, res) => {
 
     console.log('Processing AI chat request:', { message, sessionId });
 
+    // Get conversation context for AI understanding
+    const conversationContext = await conversationManager.getContextForAI(sessionId);
+
     // Use OpenAI with tools
     const result = await generateText({
       model: openai('gpt-4o-mini'),
@@ -38,6 +42,8 @@ router.post('/chat', async (req, res) => {
         {
           role: 'system',
           content: `You are an AI assistant for QuickBooks invoice management. You help users manage their invoices, customers, and business analytics through natural language.
+
+${conversationContext}
 
 Key capabilities:
 - Get and search invoices
@@ -112,6 +118,19 @@ Current context: User is authenticated with QuickBooks and ready to use all feat
       ]
     };
 
+    // Save conversation to history
+    try {
+      const finalSessionId = await conversationManager.addMessage(message, {
+        message: result.text,
+        toolCalls: response.toolCalls,
+        successful: true
+      }, sessionId);
+      response.sessionId = finalSessionId;
+    } catch (convError) {
+      console.warn('Failed to save conversation:', convError.message);
+      // Don't fail the request if conversation saving fails
+    }
+
     res.json(response);
   } catch (error) {
     console.error('AI chat error:', error.message);
@@ -152,6 +171,9 @@ router.post('/chat/stream', async (req, res) => {
 
     console.log('Processing streaming AI chat request:', { message, sessionId });
 
+    // Get conversation context for AI understanding
+    const conversationContext = await conversationManager.getContextForAI(sessionId);
+
     // Set up SSE headers
     res.writeHead(200, {
       'Content-Type': 'text/plain; charset=utf-8',
@@ -171,6 +193,8 @@ router.post('/chat/stream', async (req, res) => {
           {
             role: 'system',
             content: `You are an AI assistant for QuickBooks invoice management. You help users manage their invoices, customers, and business analytics through natural language.
+
+${conversationContext}
 
 Key capabilities:
 - Get and search invoices
@@ -222,11 +246,24 @@ Current context: User is authenticated with QuickBooks and ready to use all feat
       });
 
       // Handle streaming response
+      let fullResponse = '';
       for await (const chunk of stream.textStream) {
+        fullResponse += chunk;
         res.write(chunk);
       }
 
       res.end();
+
+      // Save conversation to history after streaming is complete
+      try {
+        await conversationManager.addMessage(message, {
+          message: fullResponse,
+          toolCalls: [], // Tool calls not easily accessible in streaming mode
+          successful: true
+        }, sessionId);
+      } catch (convError) {
+        console.warn('Failed to save streaming conversation:', convError.message);
+      }
     } catch (streamError) {
       console.error('Streaming error:', streamError.message);
       res.write(`Error: ${streamError.message}`);

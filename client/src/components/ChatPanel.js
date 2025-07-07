@@ -1,19 +1,25 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { sendChatMessage, handleApiError, getInvoiceByNumber } from '../utils/api';
+import { 
+  sendChatMessage, 
+  handleApiError, 
+  getInvoiceByNumber, 
+  getConversationSessions,
+  getCurrentConversation,
+  getConversation,
+  createNewConversation,
+  switchConversation,
+  deleteConversation
+} from '../utils/api';
 
 const ChatPanel = ({ onInvoiceUpdate, onInvoiceSelect, onOpenInvoiceSlider }) => {
-  const [messages, setMessages] = useState([
-    {
-      id: 1,
-      type: 'ai',
-      content: "Hi! I'm your AI assistant for invoice management. I can help you with:\n\n• View and search invoices\n• Analyze your business performance\n• Get customer information\n• Create new invoices\n• Track payments and overdue amounts\n\nWhat would you like to know about your business?",
-      timestamp: new Date()
-    }
-  ]);
+  const [messages, setMessages] = useState([]);
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [sessionId] = useState(`session-${Date.now()}`);
+  const [sessionId, setSessionId] = useState(null);
   const [currentSuggestions, setCurrentSuggestions] = useState([]);
+  const [conversationSessions, setConversationSessions] = useState([]);
+  const [showConversationHistory, setShowConversationHistory] = useState(false);
+  const [isLoadingConversations, setIsLoadingConversations] = useState(true);
   const messagesEndRef = useRef(null);
 
   // Auto-scroll to bottom when new messages arrive
@@ -21,19 +27,137 @@ const ChatPanel = ({ onInvoiceUpdate, onInvoiceSelect, onOpenInvoiceSlider }) =>
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Load initial suggestions when component mounts
+  // Load conversation history and current conversation on mount
   useEffect(() => {
-    // Set initial suggestions that match the backend
-    const initialSuggestions = [
-      'Show me all invoices',
-      'What are my unpaid invoices?',
-      'Void invoice 1037',
-      'Analyze my revenue',
-      'Get customer list',
-      'Show overdue invoices'
-    ];
-    setCurrentSuggestions(initialSuggestions);
+    loadConversationHistory();
+    loadCurrentConversation();
   }, []);
+
+  // Load conversation history from backend
+  const loadConversationHistory = async () => {
+    try {
+      setIsLoadingConversations(true);
+      const response = await getConversationSessions();
+      if (response.success) {
+        setConversationSessions(response.sessions || []);
+      }
+    } catch (error) {
+      console.error('Failed to load conversation history:', error);
+    } finally {
+      setIsLoadingConversations(false);
+    }
+  };
+
+  // Load current conversation
+  const loadCurrentConversation = async () => {
+    try {
+      const response = await getCurrentConversation();
+      if (response.success && response.session) {
+        setSessionId(response.session.id);
+        
+        // Convert backend message format to component format
+        const formattedMessages = response.session.messages?.map(msg => ({
+          id: msg.id,
+          type: msg.role === 'user' ? 'user' : 'ai',
+          content: msg.content,
+          timestamp: new Date(msg.timestamp),
+          toolCalls: msg.toolCalls || []
+        })) || [];
+
+        // Add welcome message if this is a new conversation
+        if (formattedMessages.length === 0) {
+          formattedMessages.push({
+            id: 'welcome',
+            type: 'ai',
+            content: "Hi! I'm your AI assistant for invoice management. I can help you with:\n\n• View and search invoices\n• Analyze your business performance\n• Get customer information\n• Create new invoices\n• Track payments and overdue amounts\n\nWhat would you like to know about your business?",
+            timestamp: new Date()
+          });
+        }
+
+        setMessages(formattedMessages);
+      }
+    } catch (error) {
+      console.error('Failed to load current conversation:', error);
+      // If no conversation exists, create a new one
+      handleNewChat();
+    }
+  };
+
+  // Create new conversation
+  const handleNewChat = async () => {
+    try {
+      const response = await createNewConversation();
+      if (response.success) {
+        setSessionId(response.sessionId);
+        setMessages([{
+          id: 'welcome',
+          type: 'ai',
+          content: "Hi! I'm your AI assistant for invoice management. I can help you with:\n\n• View and search invoices\n• Analyze your business performance\n• Get customer information\n• Create new invoices\n• Track payments and overdue amounts\n\nWhat would you like to know about your business?",
+          timestamp: new Date()
+        }]);
+        
+        // Refresh conversation list
+        loadConversationHistory();
+        
+        // Set initial suggestions
+        const initialSuggestions = [
+          'Show me all invoices',
+          'What are my unpaid invoices?',
+          'Void invoice 1037',
+          'Analyze my revenue',
+          'Show overdue invoices'
+        ];
+        setCurrentSuggestions(initialSuggestions);
+      }
+    } catch (error) {
+      console.error('Failed to create new conversation:', error);
+    }
+  };
+
+  // Switch to different conversation
+  const handleSwitchConversation = async (conversationSessionId) => {
+    try {
+      const response = await switchConversation(conversationSessionId);
+      if (response.success) {
+        setSessionId(response.sessionId);
+        
+        // Load the conversation messages
+        const conversationResponse = await getConversation(conversationSessionId);
+        if (conversationResponse.success) {
+          const formattedMessages = conversationResponse.session.messages?.map(msg => ({
+            id: msg.id,
+            type: msg.role === 'user' ? 'user' : 'ai',
+            content: msg.content,
+            timestamp: new Date(msg.timestamp),
+            toolCalls: msg.toolCalls || []
+          })) || [];
+
+          setMessages(formattedMessages);
+          setShowConversationHistory(false);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to switch conversation:', error);
+    }
+  };
+
+  // Delete conversation
+  const handleDeleteConversation = async (conversationSessionId) => {
+    try {
+      const response = await deleteConversation(conversationSessionId);
+      if (response.success) {
+        // Refresh conversation list
+        loadConversationHistory();
+        
+        // If we deleted the current conversation, create a new one
+        if (conversationSessionId === sessionId) {
+          handleNewChat();
+        }
+      }
+    } catch (error) {
+      console.error('Failed to delete conversation:', error);
+    }
+  };
 
   // Function to detect and extract invoice numbers from text
   const extractInvoiceNumbers = (text) => {
@@ -138,15 +262,11 @@ const ChatPanel = ({ onInvoiceUpdate, onInvoiceSelect, onOpenInvoiceSlider }) =>
           onInvoiceUpdate();
         }
 
-        // Check for slider calls - prioritize SUCCESSFUL searchInvoices over openInvoiceSlider
+        // Check for ANY tool that wants to trigger the slider - completely dynamic!
         const sliderCall = response.toolCalls.find(call => 
-          // First priority: Successful searchInvoices with slider action
-          (call.toolName === 'searchInvoices' && 
-           call.result?.action === 'openInvoiceSlider' && 
-           call.result?.success === true)
-        ) || response.toolCalls.find(call => 
-          // Second priority: Successful openInvoiceSlider
-          (call.toolName === 'openInvoiceSlider' && call.result?.success === true)
+          // Look for ANY successful tool that has action: 'openInvoiceSlider'
+          call.result?.success === true && 
+          call.result?.action === 'openInvoiceSlider'
         );
         
         console.log('🎯 CHATPANEL: Selected slider call:', sliderCall ? 
@@ -272,21 +392,112 @@ const ChatPanel = ({ onInvoiceUpdate, onInvoiceSelect, onOpenInvoiceSlider }) =>
   };
 
   return (
-    <div className="h-full flex flex-col">
-      {/* Chat Header */}
-      <div className="flex-shrink-0 p-4 border-b border-gray-200 bg-gray-50">
-        <div className="flex items-center space-x-3">
-          <div className="h-8 w-8 bg-blue-500 rounded-full flex items-center justify-center">
-            <svg className="h-4 w-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-            </svg>
+    <div className="h-full flex">
+      {/* Conversation History Sidebar */}
+      {showConversationHistory && (
+        <div className="w-80 border-r border-gray-200 bg-gray-50 flex flex-col">
+          {/* Sidebar Header */}
+          <div className="p-4 border-b border-gray-200">
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold text-gray-900">Conversations</h3>
+              <button
+                onClick={() => setShowConversationHistory(false)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <button
+              onClick={handleNewChat}
+              className="mt-3 w-full inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+            >
+              <svg className="h-4 w-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+              New Chat
+            </button>
           </div>
-          <div>
-            <h3 className="font-semibold text-gray-900">AI Assistant</h3>
-            <p className="text-sm text-gray-500">Ask me about your invoices</p>
+
+          {/* Conversation List */}
+          <div className="flex-1 overflow-y-auto">
+            {isLoadingConversations ? (
+              <div className="p-4 text-center text-gray-500">Loading conversations...</div>
+            ) : conversationSessions.length === 0 ? (
+              <div className="p-4 text-center text-gray-500">No conversations yet</div>
+            ) : (
+              <div className="space-y-1 p-2">
+                {conversationSessions.map((session) => (
+                  <div
+                    key={session.id}
+                    className={`group flex items-center justify-between p-3 rounded-lg hover:bg-gray-100 cursor-pointer ${
+                      session.id === sessionId ? 'bg-blue-50 border border-blue-200' : ''
+                    }`}
+                    onClick={() => handleSwitchConversation(session.id)}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <h4 className="text-sm font-medium text-gray-900 truncate">
+                        {session.title}
+                      </h4>
+                      <p className="text-xs text-gray-500">
+                        {new Date(session.updatedAt).toLocaleDateString()}
+                      </p>
+                    </div>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteConversation(session.id);
+                      }}
+                      className="opacity-0 group-hover:opacity-100 ml-2 text-gray-400 hover:text-red-600"
+                    >
+                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
-      </div>
+      )}
+
+      {/* Main Chat Panel */}
+      <div className="flex-1 flex flex-col">
+        {/* Chat Header */}
+        <div className="flex-shrink-0 p-4 border-b border-gray-200 bg-gray-50">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-3">
+              <button
+                onClick={() => setShowConversationHistory(!showConversationHistory)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                </svg>
+              </button>
+              <div className="h-8 w-8 bg-blue-500 rounded-full flex items-center justify-center">
+                <svg className="h-4 w-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                </svg>
+              </div>
+              <div>
+                <h3 className="font-semibold text-gray-900">AI Assistant</h3>
+                <p className="text-sm text-gray-500">Ask me about your invoices</p>
+              </div>
+            </div>
+            <button
+              onClick={handleNewChat}
+              className="inline-flex items-center px-3 py-1.5 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+            >
+              <svg className="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+              New
+            </button>
+          </div>
+        </div>
 
       {/* Messages Area */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin">
@@ -368,6 +579,7 @@ const ChatPanel = ({ onInvoiceUpdate, onInvoiceSelect, onOpenInvoiceSlider }) =>
             </svg>
           </button>
         </form>
+      </div>
       </div>
     </div>
   );

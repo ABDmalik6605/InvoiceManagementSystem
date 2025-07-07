@@ -1428,6 +1428,7 @@ const invoiceTools = {
 
         return {
           success: successCount > 0,
+          action: 'openInvoiceSlider', // Trigger slider display
           message: message,
           found: invoices.length,
           emailed: successCount,
@@ -1435,12 +1436,10 @@ const invoiceTools = {
           searchCriteria: filterDescription.join(', ') || searchQuery,
           emailAddress: emailAddress,
           results: emailResults,
-          invoices: invoices.map(inv => ({
-            number: inv.DocNumber,
-            customer: inv.CustomerRef?.name || 'Unknown',
-            amount: inv.TotalAmt,
-            balance: inv.Balance
-          }))
+          invoices: invoices, // Return raw QuickBooks format for slider
+          count: invoices.length,
+          filter: 'custom',
+          searchQuery: `${searchQuery} (emailed to ${emailAddress})`
         };
         
       } catch (error) {

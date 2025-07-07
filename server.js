@@ -11,6 +11,7 @@ const authRoutes = require('./routes/auth');
 const quickbooksRoutes = require('./routes/quickbooks');
 const aiRoutes = require('./routes/ai');
 const emailRoutes = require('./routes/email');
+const conversationRoutes = require('./routes/conversations');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -26,6 +27,7 @@ app.use('/auth', authRoutes);
 app.use('/api', quickbooksRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/email', emailRoutes);
+app.use('/api/conversations', conversationRoutes);
 
 // Root endpoint
 app.get('/', (req, res) => {

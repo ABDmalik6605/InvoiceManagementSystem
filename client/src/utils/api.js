@@ -65,6 +65,37 @@ export const api = {
     } catch (error) {
       throw error;
     }
+  },
+
+  // Conversation Management
+  getConversationSessions: async () => {
+    const response = await axios.get('/api/conversations/sessions');
+    return response.data;
+  },
+
+  getCurrentConversation: async () => {
+    const response = await axios.get('/api/conversations/current');
+    return response.data;
+  },
+
+  getConversation: async (sessionId) => {
+    const response = await axios.get(`/api/conversations/${sessionId}`);
+    return response.data;
+  },
+
+  createNewConversation: async (title) => {
+    const response = await axios.post('/api/conversations/new', { title });
+    return response.data;
+  },
+
+  switchConversation: async (sessionId) => {
+    const response = await axios.post(`/api/conversations/switch/${sessionId}`);
+    return response.data;
+  },
+
+  deleteConversation: async (sessionId) => {
+    const response = await axios.delete(`/api/conversations/${sessionId}`);
+    return response.data;
   }
 };
 
@@ -78,6 +109,14 @@ export const deleteInvoice = api.deleteInvoice;
 export const getCompanyInfo = api.getCompanyInfo;
 export const getBulkData = api.getBulkData;
 export const getInvoiceByNumber = api.getInvoiceByNumber;
+
+// Conversation management functions
+export const getConversationSessions = api.getConversationSessions;
+export const getCurrentConversation = api.getCurrentConversation;
+export const getConversation = api.getConversation;
+export const createNewConversation = api.createNewConversation;
+export const switchConversation = api.switchConversation;
+export const deleteConversation = api.deleteConversation;
 
 // Error handling utility
 export const handleApiError = (error) => {
