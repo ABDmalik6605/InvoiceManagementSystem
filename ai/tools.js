@@ -32,7 +32,7 @@ const invoiceTools = {
           query += ' WHERE ' + conditions.join(' AND ');
         }
         
-        query += ` ORDER BY DocNumber ASC MAXRESULTS ${limit}`;
+        query += ` ORDER BY DocNumber MAXRESULTS ${limit}`;
         
         const result = await makeInternalAPICall(`/query?query=${encodeURIComponent(query)}`);
         
@@ -170,7 +170,6 @@ const invoiceTools = {
     }),
     execute: async ({ customerName, customerId, amount, description, dueDate, lineItems }) => {
       try {
-        console.log('🔨 Creating invoice with:', { customerName, customerId, amount, description, dueDate, lineItems });
         
         // STEP 1: Validate input - must have either customerName OR customerId
         if (!customerName && !customerId) {
@@ -194,16 +193,13 @@ const invoiceTools = {
             if (foundCustomer) {
               finalCustomerId = foundCustomer.Id;
               customerNameForInvoice = foundCustomer.DisplayName || foundCustomer.Name;
-              console.log(`✅ Found existing customer: ${customerNameForInvoice} (ID: ${finalCustomerId})`);
             } else {
-              console.log(`❌ Customer "${customerName}" not found`);
               return {
                 success: false,
                 error: `Customer "${customerName}" does not exist in QuickBooks. Please create the customer first or use an existing customer.`
               };
             }
           } catch (error) {
-            console.log('⚠️ Customer search failed:', error.message);
             return {
               success: false,
               error: `Failed to search for customer "${customerName}": ${error.message}`
@@ -216,7 +212,6 @@ const invoiceTools = {
             const customer = customerResult.QueryResponse?.Customer?.[0];
             if (customer) {
               customerNameForInvoice = customer.DisplayName || customer.Name;
-              console.log(`✅ Found customer by ID: ${customerNameForInvoice} (ID: ${finalCustomerId})`);
             } else {
               return {
                 success: false,
@@ -224,7 +219,6 @@ const invoiceTools = {
               };
             }
           } catch (error) {
-            console.log('⚠️ Customer lookup by ID failed:', error.message);
             return {
               success: false,
               error: `Customer with ID "${customerId}" does not exist in QuickBooks.`
@@ -245,8 +239,6 @@ const invoiceTools = {
             description: itemDescription,
             quantity: 1
           }];
-          
-          console.log(`📝 Created default line items: ${itemDescription} - $${invoiceAmount}`);
         }
         
         // STEP 4: Determine dates
@@ -259,7 +251,6 @@ const invoiceTools = {
           const dueDateObj = new Date();
           dueDateObj.setMonth(dueDateObj.getMonth() + 1);
           finalDueDate = dueDateObj.toISOString().split('T')[0]; // YYYY-MM-DD format
-          console.log(`📅 Using default due date (1 month from today): ${finalDueDate}`);
         }
         
         // STEP 5: Build QuickBooks invoice data
@@ -280,8 +271,6 @@ const invoiceTools = {
           DueDate: finalDueDate
         };
         
-        console.log('📤 Sending invoice data to QuickBooks:', JSON.stringify(invoiceData, null, 2));
-        
         // STEP 6: Create the invoice
         const result = await makeInternalAPICall('/invoice', 'POST', invoiceData);
         let invoice = result.QueryResponse?.Invoice?.[0];
@@ -291,8 +280,6 @@ const invoiceTools = {
         if (!invoice) {
           throw new Error('Invoice creation returned no data');
         }
-        
-        console.log('✅ Invoice created successfully:', invoice.DocNumber);
         
         const totalAmount = finalLineItems.reduce((sum, item) => sum + item.amount, 0);
         
@@ -312,7 +299,6 @@ const invoiceTools = {
         };
         
       } catch (error) {
-        console.log('❌ Invoice creation failed:', error.message);
         return {
           success: false,
           error: 'Failed to create invoice: ' + error.message
@@ -332,7 +318,6 @@ const invoiceTools = {
     }),
     execute: async ({ name, email, phone, address, company }) => {
       try {
-        console.log('👤 Creating customer:', { name, email, phone, address, company });
         
         const customerData = {
           Name: name,
@@ -361,16 +346,12 @@ const invoiceTools = {
           };
         }
         
-        console.log('📤 Sending customer data to QuickBooks:', JSON.stringify(customerData, null, 2));
-        
         const result = await makeInternalAPICall('/customer', 'POST', customerData);
         const customer = result.QueryResponse?.Customer?.[0];
         
         if (!customer) {
           throw new Error('Customer creation returned no data');
         }
-        
-        console.log('✅ Customer created successfully:', customer.Name);
         
         return {
           success: true,
@@ -386,7 +367,6 @@ const invoiceTools = {
         };
         
       } catch (error) {
-        console.log('❌ Customer creation failed:', error.message);
         return {
           success: false,
           error: 'Failed to create customer: ' + error.message
@@ -409,7 +389,7 @@ const invoiceTools = {
           query += ` WHERE Active = ${active}`;
         }
         
-        query += ` ORDER BY Name ASC MAXRESULTS ${limit}`;
+        query += ` ORDER BY Name MAXRESULTS ${limit}`;
         
         const result = await makeInternalAPICall(`/query?query=${encodeURIComponent(query)}`);
         const customers = result.QueryResponse?.Customer || [];
@@ -435,59 +415,177 @@ const invoiceTools = {
   }),
 
   searchInvoices: tool({
-    description: 'Search invoices using natural language criteria. Can search by customer name, amount ranges, dates, or status.',
+    description: 'Intelligently search and filter invoices using natural language criteria. Opens the invoice slider with filtered results. Can handle ANY search criteria - customer names, amounts, dates, statuses, invoice numbers, etc. Examples: "invoices over $500", "Mark Cho invoices", "unpaid invoices due this month", "invoices from last quarter with balance over $200".',
     parameters: z.object({
-      searchQuery: z.string().describe('Search criteria (e.g., "unpaid invoices", "invoices over $1000", "invoices from last month")')
+      searchQuery: z.string().describe('Natural language search criteria - can be anything')
     }),
     execute: async ({ searchQuery }) => {
       try {
-        // Simple query parsing - in a real implementation, you'd use more sophisticated NLP
+        console.log('\n🚨 SEARCHINVOICES: Starting smart search with query:', searchQuery);
+        
+        // Use AI to parse the search intent
+        const parseResponse = await axios.post('http://localhost:3001/api/ai/parse-search', {
+          query: searchQuery
+        });
+        
+        const intent = parseResponse.data;
+        console.log('🧠 SEARCHINVOICES: Parsed intent:', JSON.stringify(intent, null, 2));
+        
+        // Generate SQL based on parsed intent
         let query = 'SELECT * FROM Invoice';
         const conditions = [];
+        const filterDescription = [];
         
-        if (searchQuery.toLowerCase().includes('unpaid')) {
-          conditions.push('Balance > 0');
+        // Build conditions dynamically based on intent
+        if (intent.conditions && intent.conditions.length > 0) {
+          for (const condition of intent.conditions) {
+            const { field, operator, value, description } = condition;
+            
+            if (field && operator && value !== undefined) {
+              let sqlCondition = '';
+              
+              switch (operator) {
+                case 'EQUALS':
+                  sqlCondition = `${field} = '${value}'`;
+                  break;
+                case 'GREATER_THAN':
+                  sqlCondition = `${field} > ${value}`;
+                  break;
+                case 'LESS_THAN':
+                  sqlCondition = `${field} < ${value}`;
+                  break;
+                case 'BETWEEN':
+                  sqlCondition = `${field} BETWEEN ${value.min} AND ${value.max}`;
+                  break;
+                case 'LIKE':
+                  sqlCondition = `${field} LIKE '%${value}%'`;
+                  break;
+                case 'CUSTOMER_LIKE':
+                  // Special handling for customer searches
+                  sqlCondition = `CustomerRef IN (SELECT Id FROM Customer WHERE Name LIKE '%${value}%')`;
+                  break;
+                case 'DATE_BEFORE':
+                  sqlCondition = `${field} < '${value}'`;
+                  break;
+                case 'DATE_AFTER':
+                  sqlCondition = `${field} > '${value}'`;
+                  break;
+                case 'DATE_BETWEEN':
+                  sqlCondition = `${field} BETWEEN '${value.start}' AND '${value.end}'`;
+                  break;
+                default:
+                  continue;
+              }
+              
+              if (sqlCondition) {
+                conditions.push(sqlCondition);
+                filterDescription.push(description || `${field} ${operator} ${value}`);
+              }
+            }
+          }
         }
         
-        if (searchQuery.toLowerCase().includes('paid')) {
-          conditions.push('Balance = 0');
-        }
-        
-        // Extract amount ranges
-        const amountMatch = searchQuery.match(/(\$|over|above|more than)\s*(\d+)/i);
-        if (amountMatch) {
-          const amount = amountMatch[2];
-          conditions.push(`TotalAmt > ${amount}`);
-        }
-        
+        // Build final query
         if (conditions.length > 0) {
           query += ' WHERE ' + conditions.join(' AND ');
         }
         
-        query += ' ORDER BY DocNumber ASC MAXRESULTS 50';
+        query += ' ORDER BY DocNumber MAXRESULTS 100';
         
-        const result = await makeInternalAPICall(`/query?query=${encodeURIComponent(query)}`);
-        const invoices = result.QueryResponse?.Invoice || [];
-
+        console.log('🔍 SEARCHINVOICES: Generated SQL:', query);
+        console.log('🔍 SEARCHINVOICES: Filter description:', filterDescription);
+        
+        let invoices = [];
+        
+        try {
+          // Try SQL first
+          const result = await makeInternalAPICall(`/query?query=${encodeURIComponent(query)}`);
+          invoices = result.QueryResponse?.Invoice || [];
+          console.log('✅ SEARCHINVOICES: SQL found', invoices.length, 'invoices');
+          
+        } catch (sqlError) {
+          console.log('⚠️ SEARCHINVOICES: SQL failed, trying JavaScript fallback');
+          
+          // Fallback: Get all invoices and filter in JavaScript
+          const allResult = await makeInternalAPICall(`/query?query=${encodeURIComponent('SELECT * FROM Invoice ORDER BY DocNumber MAXRESULTS 100')}`);
+          const allInvoices = allResult.QueryResponse?.Invoice || [];
+          
+          // Use the intent to filter in JavaScript
+          invoices = allInvoices.filter(invoice => {
+            return intent.conditions.every(condition => {
+              const { field, operator, value } = condition;
+              
+              let invoiceValue;
+              switch (field) {
+                case 'CustomerRef':
+                  invoiceValue = invoice.CustomerRef?.name || '';
+                  break;
+                case 'Balance':
+                  invoiceValue = parseFloat(invoice.Balance || 0);
+                  break;
+                case 'TotalAmt':
+                  invoiceValue = parseFloat(invoice.TotalAmt || 0);
+                  break;
+                case 'TxnDate':
+                case 'DueDate':
+                  invoiceValue = invoice[field];
+                  break;
+                default:
+                  invoiceValue = invoice[field];
+              }
+              
+              switch (operator) {
+                case 'EQUALS':
+                  return invoiceValue == value;
+                case 'GREATER_THAN':
+                  return invoiceValue > value;
+                case 'LESS_THAN':
+                  return invoiceValue < value;
+                case 'BETWEEN':
+                  return invoiceValue >= value.min && invoiceValue <= value.max;
+                case 'LIKE':
+                case 'CUSTOMER_LIKE':
+                  return invoiceValue.toString().toLowerCase().includes(value.toLowerCase());
+                case 'DATE_BEFORE':
+                  return new Date(invoiceValue) < new Date(value);
+                case 'DATE_AFTER':
+                  return new Date(invoiceValue) > new Date(value);
+                case 'DATE_BETWEEN':
+                  const date = new Date(invoiceValue);
+                  return date >= new Date(value.start) && date <= new Date(value.end);
+                default:
+                  return true;
+              }
+            });
+          });
+          
+          console.log('✅ SEARCHINVOICES: JavaScript filter found', invoices.length, 'invoices');
+        }
+        
+        if (invoices.length === 0) {
+          return {
+            success: false,
+            error: `No invoices found matching: ${searchQuery}`,
+            action: 'none'
+          };
+        }
+        
+        console.log('✅ SEARCHINVOICES: Returning', invoices.length, 'invoices');
+        
         return {
           success: true,
-          searchQuery: searchQuery,
+          action: 'openInvoiceSlider',
+          invoices: invoices, // Return raw QuickBooks format that InvoicePanel expects
           count: invoices.length,
-          invoices: invoices.map(inv => ({
-            id: inv.Id,
-            number: inv.DocNumber,
-            customer: inv.CustomerRef?.name || 'Unknown',
-            amount: inv.TotalAmt,
-            balance: inv.Balance,
-            status: parseFloat(inv.Balance) > 0 ? 'unpaid' : 'paid',
-            date: inv.TxnDate,
-            dueDate: inv.DueDate
-          }))
+          message: `Found ${invoices.length} invoices matching: ${filterDescription.join(', ') || searchQuery}`
         };
+        
       } catch (error) {
+        console.error('🚨 SEARCHINVOICES ERROR:', error.message);
         return {
           success: false,
-          error: 'Failed to search invoices: ' + error.message
+          error: 'Search failed: ' + error.message,
+          action: 'none'
         };
       }
     },
@@ -501,7 +599,7 @@ const invoiceTools = {
     execute: async ({ analysisType }) => {
       try {
         // Get recent invoices for analysis
-        const result = await makeInternalAPICall('/query?query=' + encodeURIComponent('SELECT * FROM Invoice ORDER BY DocNumber ASC MAXRESULTS 100'));
+        const result = await makeInternalAPICall('/query?query=' + encodeURIComponent('SELECT * FROM Invoice ORDER BY DocNumber MAXRESULTS 100'));
         const invoices = result.QueryResponse?.Invoice || [];
 
         const analysis = {
@@ -584,15 +682,11 @@ const invoiceTools = {
       operation: z.enum(['delete', 'void']).optional().describe('Whether to permanently DELETE (completely remove) or VOID (mark as $0) the invoice. Defaults to DELETE unless specifically asked to void.'),
     }),
     execute: async ({ invoices, operation = 'delete' }) => {
-      console.log('🔥 DELETE/VOID INVOICE TOOL STARTED');
-      console.log('📋 Input invoices array:', JSON.stringify(invoices, null, 2));
-      console.log('🔧 Operation type:', operation.toUpperCase());
       
       try {
         const results = [];
         
         for (const invoice of invoices) {
-          console.log(`\n🔍 Processing invoice:`, JSON.stringify(invoice, null, 2));
           
           try {
             let invoiceId = invoice.id;
@@ -751,7 +845,7 @@ const invoiceTools = {
           query += ' WHERE ' + conditions.join(' AND ');
         }
         
-        query += ` ORDER BY DocNumber ASC MAXRESULTS ${limit}`;
+        query += ` ORDER BY DocNumber MAXRESULTS ${limit}`;
         
         const result = await makeInternalAPICall(`/query?query=${encodeURIComponent(query)}`);
         const invoices = result.QueryResponse?.Invoice || [];
@@ -1030,7 +1124,7 @@ const invoiceTools = {
             // Create subject line if not provided
             const customerName = invoice.CustomerRef?.name || 'Customer';
             const defaultSubject = subject || `Invoice #${invoice.DocNumber} from your business`;
-            
+
             // Prepare for emailing
             results.push({
               invoiceId: invoice.Id,
@@ -1119,6 +1213,241 @@ const invoiceTools = {
         return {
           success: false,
           error: `Failed to email invoices: ${error.message}`
+        };
+      }
+    },
+  }),
+
+  searchAndEmailInvoices: tool({
+    description: 'Search for invoices using smart criteria, limit results, and email them to specified recipients. Perfect for queries like "find overdue invoices of $500, limit 2, and email them to john@example.com". Combines intelligent search with email delivery.',
+    parameters: z.object({
+      searchQuery: z.string().describe('Natural language search criteria (e.g., "overdue invoices of $500", "unpaid invoices over $200")'),
+      emailAddress: z.string().describe('Email address to send the invoices to'),
+      limit: z.number().optional().describe('Maximum number of invoices to find and email (default: 10)'),
+      subject: z.string().optional().describe('Custom email subject line')
+    }),
+    execute: async ({ searchQuery, emailAddress, limit = 10, subject }) => {
+      try {
+        console.log('🔍📧 SEARCH-AND-EMAIL: Starting combined search and email operation');
+        console.log('🔍 Search query:', searchQuery);
+        console.log('📧 Email to:', emailAddress);
+        console.log('📊 Limit:', limit);
+
+        // Validate email address
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(emailAddress)) {
+          return {
+            success: false,
+            error: `Invalid email address format: ${emailAddress}`
+          };
+        }
+
+        // Use AI to parse the search intent
+        const parseResponse = await axios.post('http://localhost:3001/api/ai/parse-search', {
+          query: searchQuery
+        });
+        
+        const intent = parseResponse.data;
+        console.log('🧠 SEARCH-AND-EMAIL: Parsed intent:', JSON.stringify(intent, null, 2));
+        
+        // Generate SQL based on parsed intent
+        let query = 'SELECT * FROM Invoice';
+        const conditions = [];
+        const filterDescription = [];
+        
+        // Build conditions dynamically based on intent
+        if (intent.conditions && intent.conditions.length > 0) {
+          for (const condition of intent.conditions) {
+            const { field, operator, value, description } = condition;
+            
+            if (field && operator && value !== undefined) {
+              let sqlCondition = '';
+              
+              switch (operator) {
+                case 'EQUALS':
+                  sqlCondition = `${field} = '${value}'`;
+                  break;
+                case 'GREATER_THAN':
+                  sqlCondition = `${field} > ${value}`;
+                  break;
+                case 'LESS_THAN':
+                  sqlCondition = `${field} < ${value}`;
+                  break;
+                case 'BETWEEN':
+                  sqlCondition = `${field} BETWEEN ${value.min} AND ${value.max}`;
+                  break;
+                case 'LIKE':
+                  sqlCondition = `${field} LIKE '%${value}%'`;
+                  break;
+                case 'CUSTOMER_LIKE':
+                  sqlCondition = `CustomerRef IN (SELECT Id FROM Customer WHERE Name LIKE '%${value}%')`;
+                  break;
+                case 'DATE_BEFORE':
+                  sqlCondition = `${field} < '${value}'`;
+                  break;
+                case 'DATE_AFTER':
+                  sqlCondition = `${field} > '${value}'`;
+                  break;
+                case 'DATE_BETWEEN':
+                  sqlCondition = `${field} BETWEEN '${value.start}' AND '${value.end}'`;
+                  break;
+                default:
+                  continue;
+              }
+              
+              if (sqlCondition) {
+                conditions.push(sqlCondition);
+                filterDescription.push(description || `${field} ${operator} ${value}`);
+              }
+            }
+          }
+        }
+        
+        // Build final query with custom limit
+        if (conditions.length > 0) {
+          query += ' WHERE ' + conditions.join(' AND ');
+        }
+        
+        query += ` ORDER BY DocNumber MAXRESULTS ${limit}`;
+        
+        console.log('🔍 SEARCH-AND-EMAIL: Generated SQL:', query);
+        console.log('🔍 SEARCH-AND-EMAIL: Filter description:', filterDescription);
+        
+        let invoices = [];
+        
+        try {
+          // Try SQL first
+          const result = await makeInternalAPICall(`/query?query=${encodeURIComponent(query)}`);
+          invoices = result.QueryResponse?.Invoice || [];
+          console.log('✅ SEARCH-AND-EMAIL: SQL found', invoices.length, 'invoices');
+          
+        } catch (sqlError) {
+          console.log('⚠️ SEARCH-AND-EMAIL: SQL failed, trying JavaScript fallback');
+          
+          // Fallback: Get all invoices and filter in JavaScript
+          const allResult = await makeInternalAPICall(`/query?query=${encodeURIComponent('SELECT * FROM Invoice ORDER BY DocNumber MAXRESULTS 100')}`);
+          const allInvoices = allResult.QueryResponse?.Invoice || [];
+          
+          // Use the intent to filter in JavaScript
+          let filteredInvoices = allInvoices.filter(invoice => {
+            return intent.conditions.every(condition => {
+              const { field, operator, value } = condition;
+              
+              let invoiceValue;
+              switch (field) {
+                case 'CustomerRef':
+                  invoiceValue = invoice.CustomerRef?.name || '';
+                  break;
+                case 'Balance':
+                  invoiceValue = parseFloat(invoice.Balance || 0);
+                  break;
+                case 'TotalAmt':
+                  invoiceValue = parseFloat(invoice.TotalAmt || 0);
+                  break;
+                case 'TxnDate':
+                case 'DueDate':
+                  invoiceValue = invoice[field];
+                  break;
+                default:
+                  invoiceValue = invoice[field];
+              }
+              
+              switch (operator) {
+                case 'EQUALS':
+                  return invoiceValue == value;
+                case 'GREATER_THAN':
+                  return invoiceValue > value;
+                case 'LESS_THAN':
+                  return invoiceValue < value;
+                case 'BETWEEN':
+                  return invoiceValue >= value.min && invoiceValue <= value.max;
+                case 'LIKE':
+                case 'CUSTOMER_LIKE':
+                  return invoiceValue.toString().toLowerCase().includes(value.toLowerCase());
+                case 'DATE_BEFORE':
+                  return new Date(invoiceValue) < new Date(value);
+                case 'DATE_AFTER':
+                  return new Date(invoiceValue) > new Date(value);
+                case 'DATE_BETWEEN':
+                  const date = new Date(invoiceValue);
+                  return date >= new Date(value.start) && date <= new Date(value.end);
+                default:
+                  return true;
+              }
+            });
+          });
+          
+          // Apply limit in JavaScript
+          invoices = filteredInvoices.slice(0, limit);
+          console.log('✅ SEARCH-AND-EMAIL: JavaScript filter found', invoices.length, 'invoices');
+        }
+        
+        if (invoices.length === 0) {
+          return {
+            success: false,
+            error: `No invoices found matching: ${searchQuery}`,
+            found: 0
+          };
+        }
+
+        console.log('📧 SEARCH-AND-EMAIL: Preparing to email', invoices.length, 'invoices');
+
+        // Prepare email data
+        const emailSubject = subject || `Filtered Invoices: ${filterDescription.join(', ') || searchQuery}`;
+        const invoicesToEmail = invoices.map(inv => ({
+          invoiceId: inv.Id,
+          invoiceNumber: inv.DocNumber,
+          customerEmail: emailAddress // Override with specified email
+        }));
+
+        // Send emails using existing email functionality
+        const QuickBooksEmailService = require('../services/email');
+        const emailService = new QuickBooksEmailService();
+
+        const emailResults = await emailService.sendMultipleInvoicePdfs(
+          invoicesToEmail.map(item => ({
+            invoiceId: item.invoiceId,
+            email: item.customerEmail,
+            subject: emailSubject
+          }))
+        );
+
+        const successCount = emailResults.filter(r => r.success).length;
+        const failureCount = emailResults.filter(r => !r.success).length;
+
+        let message = '';
+        if (successCount === invoices.length) {
+          message = `✅ Successfully found ${invoices.length} invoices matching "${filterDescription.join(', ') || searchQuery}" and emailed them to ${emailAddress}`;
+        } else if (successCount > 0) {
+          message = `⚠️ Found ${invoices.length} invoices: ${successCount} emailed successfully, ${failureCount} failed to send to ${emailAddress}`;
+        } else {
+          message = `❌ Found ${invoices.length} invoices but failed to email any to ${emailAddress}`;
+        }
+
+        console.log('✅ SEARCH-AND-EMAIL: Completed -', message);
+
+        return {
+          success: successCount > 0,
+          message: message,
+          found: invoices.length,
+          emailed: successCount,
+          failed: failureCount,
+          searchCriteria: filterDescription.join(', ') || searchQuery,
+          emailAddress: emailAddress,
+          results: emailResults,
+          invoices: invoices.map(inv => ({
+            number: inv.DocNumber,
+            customer: inv.CustomerRef?.name || 'Unknown',
+            amount: inv.TotalAmt,
+            balance: inv.Balance
+          }))
+        };
+        
+      } catch (error) {
+        console.error('🚨 SEARCH-AND-EMAIL ERROR:', error.message);
+        return {
+          success: false,
+          error: 'Search and email failed: ' + error.message
         };
       }
     },

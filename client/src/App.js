@@ -22,7 +22,6 @@ function App() {
         setIsAuthenticated(authStatus.status === 'connected');
         setAuthError(null);
       } catch (error) {
-        console.error('Auth check failed:', error);
         setIsAuthenticated(false);
         setAuthError('Failed to check authentication status');
       } finally {
@@ -44,10 +43,36 @@ function App() {
   };
 
   // Handle opening invoice slider (clear selection to show slider view)
-  const handleOpenInvoiceSlider = (filter = 'all') => {
+  const handleOpenInvoiceSlider = (filter = 'all', customInvoices = null, searchQuery = null) => {
+    console.log('🏠 APP.JS: handleOpenInvoiceSlider called');
+    console.log('🔧 APP.JS: filter:', filter);
+    console.log('📊 APP.JS: customInvoices count:', customInvoices?.length || 'NONE');
+    console.log('🔍 APP.JS: searchQuery:', searchQuery);
+    if (customInvoices?.length > 0) {
+      console.log('📄 APP.JS: First custom invoice:', customInvoices[0].DocNumber, '-', customInvoices[0].CustomerRef?.name);
+    }
+    
     setSelectedInvoice(null); // Clear selection to show slider view
-    setForceSliderView({ view: 'slider', filter: filter }); // Force slider view with filter
-    handleInvoiceUpdate(); // Refresh invoices
+    const sliderViewData = { 
+      view: 'slider', 
+      filter: filter,
+      customInvoices: customInvoices,
+      searchQuery: searchQuery
+    };
+    
+    console.log('🔄 APP.JS: Setting forceSliderView to:', {
+      ...sliderViewData,
+      customInvoices: sliderViewData.customInvoices?.length ? `${sliderViewData.customInvoices.length} invoices` : 'NONE'
+    });
+    
+    setForceSliderView(sliderViewData); // Force slider view with filter and custom data
+    
+    if (!customInvoices) {
+      console.log('🔄 APP.JS: No custom invoices, triggering refresh');
+      handleInvoiceUpdate(); // Only refresh if not using custom data
+    } else {
+      console.log('✅ APP.JS: Using custom invoices, skipping refresh');
+    }
   };
 
   if (isLoading) {

@@ -113,6 +113,23 @@ const ChatPanel = ({ onInvoiceUpdate, onInvoiceSelect, onOpenInvoiceSlider }) =>
       // Check if any tool calls created or modified invoices
       let invoiceSelected = false;
       if (response.toolCalls && response.toolCalls.length > 0) {
+        // DEBUG: Log all tool calls to see what the AI is actually calling
+        console.log('🔍 CHATPANEL: ALL TOOL CALLS:', response.toolCalls.map(call => ({
+          toolName: call.toolName,
+          hasResult: !!call.result,
+          resultAction: call.result?.action,
+          success: call.result?.success,
+          invoiceCount: call.result?.invoices?.length
+        })));
+
+        // DEBUG: Show which searchInvoices calls are successful
+        const successfulSearchCalls = response.toolCalls.filter(call => 
+          call.toolName === 'searchInvoices' && 
+          call.result?.action === 'openInvoiceSlider' && 
+          call.result?.success === true
+        );
+        console.log('✅ CHATPANEL: Successful searchInvoices calls:', successfulSearchCalls.length);
+
         const hasInvoiceOperation = response.toolCalls.some(call => 
           ['getInvoices', 'createInvoice', 'getInvoiceById', 'getInvoiceByNumber', 'deleteInvoice', 'updateInvoice', 'emailInvoices'].includes(call.toolName)
         );
@@ -121,38 +138,85 @@ const ChatPanel = ({ onInvoiceUpdate, onInvoiceSelect, onOpenInvoiceSlider }) =>
           onInvoiceUpdate();
         }
 
-        // Check for openInvoiceSlider tool call
-        const sliderCall = response.toolCalls.find(call => call.toolName === 'openInvoiceSlider');
+        // Check for slider calls - prioritize SUCCESSFUL searchInvoices over openInvoiceSlider
+        const sliderCall = response.toolCalls.find(call => 
+          // First priority: Successful searchInvoices with slider action
+          (call.toolName === 'searchInvoices' && 
+           call.result?.action === 'openInvoiceSlider' && 
+           call.result?.success === true)
+        ) || response.toolCalls.find(call => 
+          // Second priority: Successful openInvoiceSlider
+          (call.toolName === 'openInvoiceSlider' && call.result?.success === true)
+        );
+        
+        console.log('🎯 CHATPANEL: Selected slider call:', sliderCall ? 
+          `${sliderCall.toolName} (success: ${sliderCall.result?.success}, invoices: ${sliderCall.result?.invoices?.length})` : 
+          'NONE');
+        
         if (sliderCall && sliderCall.result && sliderCall.result.success) {
-          console.log('Opening invoice slider via AI tool:', sliderCall.result);
-          onOpenInvoiceSlider && onOpenInvoiceSlider(sliderCall.result.filter || 'all');
+          console.log('🎯 CHATPANEL: Prioritized tool call:', sliderCall.toolName);
+          console.log('📱 CHATPANEL: Slider call detected:', sliderCall.toolName);
+          console.log('📊 CHATPANEL: Filter:', sliderCall.result.filter);
+          console.log('📋 CHATPANEL: Invoice count:', sliderCall.result.invoices?.length || 0);
+          console.log('🔍 CHATPANEL: Search query:', sliderCall.result.searchQuery);
+          if (sliderCall.result.invoices?.length > 0) {
+            console.log('📄 CHATPANEL: First invoice:', sliderCall.result.invoices[0].DocNumber, '-', sliderCall.result.invoices[0].CustomerRef?.name);
+          }
+          
+          // DEBUG: Log data being passed to slider
+          console.log('🚀 CHATPANEL: Calling onOpenInvoiceSlider with data:');
+          console.log('   📊 Filter:', sliderCall.result.filter || 'all');
+          console.log('   📋 Invoice count:', sliderCall.result.invoices?.length || 0);
+          console.log('   🔍 Search query:', sliderCall.result.searchQuery || null);
+          if (sliderCall.result.invoices?.length > 0) {
+            console.log('   📄 First invoice:', sliderCall.result.invoices[0].DocNumber, '-', sliderCall.result.invoices[0].CustomerRef?.name);
+            console.log('   📄 Last invoice:', sliderCall.result.invoices[sliderCall.result.invoices.length-1].DocNumber, '-', sliderCall.result.invoices[sliderCall.result.invoices.length-1].CustomerRef?.name);
+          }
+
+          // Pass both filter and invoice data to the slider
+          onOpenInvoiceSlider && onOpenInvoiceSlider(
+            sliderCall.result.filter || 'all', 
+            sliderCall.result.invoices || null,
+            sliderCall.result.searchQuery || null
+          );
           invoiceSelected = true; // Prevent other selection logic from running
         }
 
-        // If a specific invoice was retrieved, select it
+        // Check if multiple invoices are mentioned in the response
+        const invoiceNumbers = extractInvoiceNumbers(response.response);
+        const multipleInvoicesDetected = invoiceNumbers.length > 1;
+        
+        console.log('🔍 CHATPANEL: Invoice numbers detected in response:', invoiceNumbers);
+        console.log('🔍 CHATPANEL: Multiple invoices detected:', multipleInvoicesDetected);
+        
+        // If a specific single invoice was retrieved AND no multiple invoices detected, select it for detail view
         const invoiceCall = response.toolCalls.find(call => 
           call.toolName === 'getInvoiceById' || call.toolName === 'getInvoiceByNumber'
         );
-        if (invoiceCall && invoiceCall.result && invoiceCall.result.success && !invoiceSelected) {
-          console.log('Using AI tool result for invoice selection:', invoiceCall.result.invoice);
+        
+        if (invoiceCall && invoiceCall.result && invoiceCall.result.success && !invoiceSelected && !multipleInvoicesDetected) {
+          console.log('✅ CHATPANEL: Using single invoice for detail view:', invoiceCall.result.invoice.DocNumber);
           onInvoiceSelect(invoiceCall.result.invoice);
           invoiceSelected = true;
+        } else if (invoiceCall && invoiceCall.result && invoiceCall.result.success && multipleInvoicesDetected) {
+          console.log('🚫 CHATPANEL: Single invoice call detected but multiple invoices mentioned - skipping detail view');
         }
       }
 
-      // Only use pattern detection if AI tool didn't already select an invoice
+      // Only use pattern detection for single invoice if no tools handled it
       if (!invoiceSelected) {
         const invoiceNumbers = extractInvoiceNumbers(response.response);
-        if (invoiceNumbers.length > 0) {
-          // Try to find and select the first mentioned invoice number
+        if (invoiceNumbers.length === 1) {
+          // Only auto-select for single invoice mentions
           const firstInvoiceNumber = invoiceNumbers[0];
-          console.log(`Detected invoice numbers in AI response: ${invoiceNumbers.join(', ')}`);
-          console.log(`Attempting to auto-select invoice: ${firstInvoiceNumber}`);
+          console.log(`✅ CHATPANEL: Single invoice detected: ${firstInvoiceNumber} - auto-selecting for detail view`);
           
           const success = await autoSelectInvoiceByNumber(firstInvoiceNumber);
           if (success) {
             console.log(`Successfully auto-selected invoice ${firstInvoiceNumber}`);
           }
+        } else if (invoiceNumbers.length > 1) {
+          console.log(`🚫 CHATPANEL: Multiple invoices detected (${invoiceNumbers.length}) - not auto-selecting for detail view`);
         }
       }
 
@@ -192,7 +256,6 @@ const ChatPanel = ({ onInvoiceUpdate, onInvoiceSelect, onOpenInvoiceSlider }) =>
     'Show me invoice 1037', 
     'Analyze my revenue',
     'Find unpaid invoices',
-    'Get customer list',
     'Show overdue invoices'
   ];
 

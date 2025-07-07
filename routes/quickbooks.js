@@ -101,7 +101,7 @@ router.get('/invoices', async (req, res) => {
       query += ' WHERE ' + conditions.join(' AND ');
     }
     
-    query += ` ORDER BY DocNumber ASC MAXRESULTS ${limit}`;
+    query += ` ORDER BY DocNumber MAXRESULTS ${limit}`;
 
     console.log('Executing query:', query);
 

@@ -12,6 +12,7 @@ const InvoicePanel = ({ selectedInvoice, refreshTrigger, onInvoiceSelect, forceS
   const [currentSlide, setCurrentSlide] = useState(0);
   const [slidesPerView] = useState(6); // Number of invoices to show per slide
   const [filter, setFilter] = useState('all'); // Filter: 'all', 'paid', 'unpaid', 'overdue'
+  const [searchQuery, setSearchQuery] = useState(''); // Search query for display
   
   // Delete functionality state
   const [selectedInvoices, setSelectedInvoices] = useState(new Set());
@@ -21,8 +22,26 @@ const InvoicePanel = ({ selectedInvoice, refreshTrigger, onInvoiceSelect, forceS
   const [showBulkActions, setShowBulkActions] = useState(false);
 
   useEffect(() => {
+    console.log('🔄 INVOICEPANEL: loadData useEffect triggered - refreshTrigger:', refreshTrigger);
+    console.log('🔧 INVOICEPANEL: forceSliderView in loadData:', forceSliderView);
+    console.log('🔧 INVOICEPANEL: forceSliderView exists?', !!forceSliderView);
+    console.log('🔧 INVOICEPANEL: customInvoices exists?', !!forceSliderView?.customInvoices);
+    console.log('🔧 INVOICEPANEL: customInvoices length:', forceSliderView?.customInvoices?.length || 0);
+    console.log('🔧 INVOICEPANEL: Current invoices state length before decision:', invoices.length);
+    
+    // Don't load data if we're using custom filtered invoices
+    if (forceSliderView && forceSliderView.customInvoices && forceSliderView.customInvoices.length > 0) {
+      console.log('🚫 INVOICEPANEL: SKIPPING loadData - using custom invoices, count:', forceSliderView.customInvoices.length);
+      console.log('🚫 INVOICEPANEL: First custom invoice in skip check:', forceSliderView.customInvoices[0].DocNumber, '-', forceSliderView.customInvoices[0].CustomerRef?.name);
+      return;
+    }
+    
+    console.log('▶️ INVOICEPANEL: PROCEEDING with loadData - no custom invoices to preserve');
+    console.log('▶️ INVOICEPANEL: About to load fresh data from API...');
+
     const loadData = async () => {
       try {
+        console.log('📡 INVOICEPANEL: Starting API call to getInvoices');
         setIsLoading(true);
         setError(null);
 
@@ -30,6 +49,10 @@ const InvoicePanel = ({ selectedInvoice, refreshTrigger, onInvoiceSelect, forceS
         const invoicesData = await getInvoices({ limit: 50 });
 
         const invoiceList = invoicesData.QueryResponse?.Invoice || [];
+        console.log('📊 INVOICEPANEL: Received invoices from API - count:', invoiceList.length);
+        if (invoiceList.length > 0) {
+          console.log('📄 INVOICEPANEL: First API invoice:', invoiceList[0].DocNumber, '-', invoiceList[0].CustomerRef?.name);
+        }
         setInvoices(invoiceList);
 
         // Calculate analytics from invoice data
@@ -61,7 +84,7 @@ const InvoicePanel = ({ selectedInvoice, refreshTrigger, onInvoiceSelect, forceS
     };
 
     loadData();
-  }, [refreshTrigger]);
+  }, [refreshTrigger]); // Removed forceSliderView dependency to prevent race condition
 
   useEffect(() => {
     if (selectedInvoice) {
@@ -71,21 +94,71 @@ const InvoicePanel = ({ selectedInvoice, refreshTrigger, onInvoiceSelect, forceS
 
   // Handle forced slider view from AI
   useEffect(() => {
+    console.log('🎯 INVOICEPANEL: forceSliderView useEffect triggered');
+    console.log('📦 INVOICEPANEL: forceSliderView prop:', forceSliderView);
+    
     if (forceSliderView) {
+      console.log('🔧 INVOICEPANEL: Setting view to:', forceSliderView.view);
+      console.log('🔧 INVOICEPANEL: Setting filter to:', forceSliderView.filter);
+      console.log('🔍 INVOICEPANEL: Search query:', forceSliderView.searchQuery);
+      console.log('📊 INVOICEPANEL: Custom invoices count:', forceSliderView.customInvoices?.length || 'NONE');
+      
       setView(forceSliderView.view);
       setFilter(forceSliderView.filter);
       setCurrentSlide(0);
+      
+      // If custom invoices provided, use them instead of loaded data
+      if (forceSliderView.customInvoices && forceSliderView.customInvoices.length > 0) {
+        console.log('✅ INVOICEPANEL: Setting custom invoices - count:', forceSliderView.customInvoices.length);
+        console.log('📄 INVOICEPANEL: First custom invoice:', forceSliderView.customInvoices[0].DocNumber, '-', forceSliderView.customInvoices[0].CustomerRef?.name);
+        console.log('📄 INVOICEPANEL: Last custom invoice:', forceSliderView.customInvoices[forceSliderView.customInvoices.length-1].DocNumber, '-', forceSliderView.customInvoices[forceSliderView.customInvoices.length-1].CustomerRef?.name);
+        console.log('🔄 INVOICEPANEL: About to call setInvoices with custom data');
+        
+        setInvoices(forceSliderView.customInvoices);
+        setIsLoading(false); // Ensure loading state is off
+        
+        // Set search query for display
+        if (forceSliderView.searchQuery) {
+          console.log('🔍 INVOICEPANEL: Setting search query:', forceSliderView.searchQuery);
+          setSearchQuery(forceSliderView.searchQuery);
+        }
+        
+        console.log('✅ INVOICEPANEL: setInvoices called with custom data');
+      } else {
+        console.log('⚠️ INVOICEPANEL: No custom invoices provided');
+      }
+      
       // Notify parent that the forced view has been applied
       onSliderViewApplied && onSliderViewApplied();
+    } else {
+      console.log('❌ INVOICEPANEL: forceSliderView is null/undefined');
     }
   }, [forceSliderView, onSliderViewApplied]);
 
+  // DEBUG: Watch for changes to invoices state
+  useEffect(() => {
+    console.log('📊 INVOICEPANEL: invoices state changed - new length:', invoices.length);
+    if (invoices.length > 0) {
+      console.log('📊 INVOICEPANEL: First invoice in new state:', invoices[0].DocNumber, '-', invoices[0].CustomerRef?.name);
+      console.log('📊 INVOICEPANEL: Last invoice in new state:', invoices[invoices.length-1].DocNumber, '-', invoices[invoices.length-1].CustomerRef?.name);
+    }
+  }, [invoices]);
+
   // Filter invoices based on current filter
+  console.log('🔍 INVOICEPANEL: Filtering invoices');
+  console.log('📊 INVOICEPANEL: Current invoices array length:', invoices.length);
+  console.log('🔧 INVOICEPANEL: Current filter:', filter);
+  if (invoices.length > 0) {
+    console.log('📄 INVOICEPANEL: First invoice in array:', invoices[0].DocNumber, '-', invoices[0].CustomerRef?.name);
+  }
+  
   const filteredInvoices = invoices.filter(invoice => {
-    if (filter === 'all') return true;
+    if (filter === 'all' || filter === 'custom') return true; // 'custom' means pre-filtered data
     const status = getInvoiceStatus(invoice);
     return status === filter;
   });
+  
+  console.log('📋 INVOICEPANEL: Filtered invoices count:', filteredInvoices.length);
 
   // Reset slide when filter changes
   useEffect(() => {
@@ -362,11 +435,20 @@ const InvoicePanel = ({ selectedInvoice, refreshTrigger, onInvoiceSelect, forceS
             </div>
             
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-gray-900">
-                {filter === 'all' ? 'Recent Invoices' : 
-                 filter === 'paid' ? 'Paid Invoices' :
-                 filter === 'unpaid' ? 'Unpaid Invoices' : 'Overdue Invoices'}
-              </h3>
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">
+                  {forceSliderView?.searchQuery ? 'Search Results' :
+                   filter === 'all' ? 'Recent Invoices' : 
+                   filter === 'paid' ? 'Paid Invoices' :
+                   filter === 'unpaid' ? 'Unpaid Invoices' : 
+                   filter === 'custom' ? 'Filtered Invoices' : 'Overdue Invoices'}
+                </h3>
+                {forceSliderView?.searchQuery && (
+                  <p className="text-sm text-gray-600 mt-1">
+                    Results for: "{forceSliderView.searchQuery}"
+                  </p>
+                )}
+              </div>
               <div className="flex items-center space-x-2">
                 {filteredInvoices.length > slidesPerView && (
                   <div className="flex space-x-1">
@@ -603,11 +685,19 @@ const InvoicePanel = ({ selectedInvoice, refreshTrigger, onInvoiceSelect, forceS
             </div>
             
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-gray-900">
-                {filter === 'all' ? 'Recent Invoices' : 
-                 filter === 'paid' ? 'Paid Invoices' :
-                 filter === 'unpaid' ? 'Unpaid Invoices' : 'Overdue Invoices'}
-              </h3>
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">
+                  {forceSliderView?.searchQuery ? 'Search Results' :
+                   filter === 'all' ? 'Recent Invoices' : 
+                   filter === 'paid' ? 'Paid Invoices' :
+                   filter === 'unpaid' ? 'Unpaid Invoices' : 'Overdue Invoices'}
+                </h3>
+                {forceSliderView?.searchQuery && (
+                  <p className="text-sm text-gray-500 mt-1">
+                    Showing results for: "{forceSliderView.searchQuery}"
+                  </p>
+                )}
+              </div>
             </div>
             
             {filteredInvoices.length === 0 ? (

@@ -8,7 +8,7 @@ async function makeInternalAPICall(endpoint, method = 'GET', data = null) {
   console.log(`\n🔥 MAKE INTERNAL API CALL STARTED`);
   console.log(`📡 Endpoint: ${endpoint}`);
   console.log(`🔧 Method: ${method}`);
-  console.log(`📤 Data:`, data ? JSON.stringify(data, null, 2) : 'None');
+        // TEMPORARILY DISABLED: console.log(`📤 Data:`, data ? JSON.stringify(data, null, 2) : 'None');
   
   try {
     console.log(`🔐 Getting access token...`);
@@ -53,12 +53,12 @@ async function makeInternalAPICall(endpoint, method = 'GET', data = null) {
       config.headers['Content-Type'] = 'application/json';
     }
 
-    console.log(`📤 Request config:`, JSON.stringify(config, null, 2));
+          // TEMPORARILY DISABLED: console.log(`📤 Request config:`, JSON.stringify(config, null, 2));
     console.log(`🚀 Making QuickBooks API request...`);
 
     const response = await axios(config);
     console.log(`✅ Response status: ${response.status}`);
-    console.log(`📋 Response data:`, JSON.stringify(response.data, null, 2));
+          // TEMPORARILY DISABLED: console.log(`📋 Response data:`, JSON.stringify(response.data, null, 2));
     
     return response.data;
   } catch (error) {

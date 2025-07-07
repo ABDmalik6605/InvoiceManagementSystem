@@ -50,6 +50,19 @@ Key capabilities:
 TOOL SELECTION RULES:
 - For general requests like "show all invoices" or "display invoices": Use openInvoiceSlider tool first
 - For specific invoices like "show invoice 1037": Use getInvoiceByNumber tool
+- For FILTERING/SEARCHING requests: Use searchInvoices tool for ANY filtering criteria like:
+  * "invoices over $500" 
+  * "unpaid invoices for John Smith"
+  * "invoices due before Dec 31"
+  * "invoices with balance greater than $100"
+  * "overdue invoices"
+  * "invoices from last month"
+  * ANY natural language filtering - be smart about detecting filter intent
+- For SEARCH + EMAIL + LIMIT requests: Use searchAndEmailInvoices tool for complex queries like:
+  * "find overdue invoices of $500, limit 2, email to john@example.com"
+  * "get unpaid invoices over $200, limit 5, send to admin@company.com"
+  * "list invoices from last month with balance > $100, limit 3, email them to manager@business.com"
+  * ANY query that combines search criteria + email delivery + optional limits
 - For invoice analysis or data: Use getInvoices tool (but combine with openInvoiceSlider for display)
 - For deletion requests: Use deleteInvoice tool with these rules:
   * Words like "delete", "remove", "erase": Use operation="delete" (permanently removes)
@@ -95,7 +108,6 @@ Current context: User is authenticated with QuickBooks and ready to use all feat
         'What are my unpaid invoices?',
         'Delete invoice 1037',
         'Analyze my revenue',
-        'Get customer list',
         'Show overdue invoices'
       ]
     };
@@ -171,6 +183,19 @@ Key capabilities:
 TOOL SELECTION RULES:
 - For general requests like "show all invoices" or "display invoices": Use openInvoiceSlider tool first
 - For specific invoices like "show invoice 1037": Use getInvoiceByNumber tool
+- For FILTERING/SEARCHING requests: Use searchInvoices tool for ANY filtering criteria like:
+  * "invoices over $500" 
+  * "unpaid invoices for John Smith"
+  * "invoices due before Dec 31"
+  * "invoices with balance greater than $100"
+  * "overdue invoices"
+  * "invoices from last month"
+  * ANY natural language filtering - be smart about detecting filter intent
+- For SEARCH + EMAIL + LIMIT requests: Use searchAndEmailInvoices tool for complex queries like:
+  * "find overdue invoices of $500, limit 2, email to john@example.com"
+  * "get unpaid invoices over $200, limit 5, send to admin@company.com"
+  * "list invoices from last month with balance > $100, limit 3, email them to manager@business.com"
+  * ANY query that combines search criteria + email delivery + optional limits
 - For invoice analysis or data: Use getInvoices tool (but combine with openInvoiceSlider for display)
 - For deletion requests: Use deleteInvoice tool with these rules:
   * Words like "delete", "remove", "erase": Use operation="delete" (permanently removes)
@@ -211,6 +236,115 @@ Current context: User is authenticated with QuickBooks and ready to use all feat
   } catch (error) {
     console.error('AI streaming chat error:', error.message);
     res.status(500).json({ error: 'Failed to process streaming chat message' });
+  }
+});
+
+// Add this new endpoint for intelligent search parsing
+router.post('/parse-search', async (req, res) => {
+  try {
+    const { query } = req.body;
+    
+    if (!query) {
+      return res.status(400).json({ error: 'Search query is required' });
+    }
+    
+    console.log('🧠 AI PARSE: Analyzing query:', query);
+    
+    // Use AI to intelligently parse the search query
+    const { generateObject } = require('ai');
+    const { openai } = require('@ai-sdk/openai');
+    const { z } = require('zod');
+    
+    const SearchConditionSchema = z.object({
+      field: z.string().describe('QuickBooks field name (CustomerRef, Balance, TotalAmt, TxnDate, DueDate, DocNumber, etc.)'),
+      operator: z.enum(['EQUALS', 'GREATER_THAN', 'LESS_THAN', 'BETWEEN', 'LIKE', 'CUSTOMER_LIKE', 'DATE_BEFORE', 'DATE_AFTER', 'DATE_BETWEEN']).describe('Comparison operator'),
+      value: z.union([
+        z.string(),
+        z.number(),
+        z.object({
+          min: z.number(),
+          max: z.number()
+        }),
+        z.object({
+          start: z.string(),
+          end: z.string()
+        })
+      ]).describe('Value to compare against'),
+      description: z.string().describe('Human-readable description of this condition')
+    });
+    
+    const SearchIntentSchema = z.object({
+      conditions: z.array(SearchConditionSchema).describe('Array of search conditions to apply'),
+      summary: z.string().describe('Brief summary of what this search is looking for')
+    });
+    
+    const systemPrompt = `You are an expert at parsing natural language invoice search queries into structured database conditions.
+
+QUICKBOOKS INVOICE FIELDS:
+- CustomerRef: Customer name (use CUSTOMER_LIKE operator for name searches)
+- Balance: Amount still owed (use for "balance", "owed", "due")
+- TotalAmt: Total invoice amount (use for "amount", "total", "invoice value")  
+- TxnDate: Invoice creation date
+- DueDate: Payment due date
+- DocNumber: Invoice number
+- Private: Whether invoice is private (boolean)
+
+STATUS LOGIC:
+- "unpaid" = Balance > 0
+- "paid" = Balance = 0 (or Balance <= 0)
+- "overdue" = Balance > 0 AND DueDate < today
+
+DATE HANDLING:
+- Convert relative dates like "this month", "last week", "today" to actual dates
+- Use DATE_BETWEEN for ranges, DATE_BEFORE/DATE_AFTER for single bounds
+- Format dates as YYYY-MM-DD
+
+EXAMPLES:
+
+Query: "Mark Cho invoices"
+→ [{ field: "CustomerRef", operator: "CUSTOMER_LIKE", value: "Mark Cho", description: "customer: Mark Cho" }]
+
+Query: "invoices over $500"  
+→ [{ field: "TotalAmt", operator: "GREATER_THAN", value: 500, description: "amount > $500" }]
+
+Query: "unpaid invoices"
+→ [{ field: "Balance", operator: "GREATER_THAN", value: 0, description: "unpaid" }]
+
+Query: "balance between 500 and 1000"
+→ [{ field: "Balance", operator: "BETWEEN", value: { min: 500, max: 1000 }, description: "balance between $500 and $1000" }]
+
+Query: "overdue invoices"
+→ [
+  { field: "Balance", operator: "GREATER_THAN", value: 0, description: "unpaid" },
+  { field: "DueDate", operator: "DATE_BEFORE", value: "${new Date().toISOString().split('T')[0]}", description: "overdue" }
+]
+
+Query: "invoices due this month"
+→ [{ field: "DueDate", operator: "DATE_BETWEEN", value: { start: "start_of_month", end: "end_of_month" }, description: "due this month" }]
+
+Parse the query intelligently and return structured conditions. Handle ANY search criteria flexibly.`;
+
+    const result = await generateObject({
+      model: openai('gpt-4'),
+      schema: SearchIntentSchema,
+      prompt: `Parse this invoice search query: "${query}"
+      
+Current date: ${new Date().toISOString().split('T')[0]}
+Start of month: ${new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0]}
+End of month: ${new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).toISOString().split('T')[0]}`,
+      system: systemPrompt
+    });
+    
+    console.log('🧠 AI PARSE: Generated intent:', JSON.stringify(result.object, null, 2));
+    
+    res.json(result.object);
+    
+  } catch (error) {
+    console.error('🚨 AI PARSE ERROR:', error.message);
+    res.status(500).json({ 
+      error: 'Failed to parse search query',
+      details: error.message 
+    });
   }
 });
 
