@@ -155,7 +155,7 @@ const invoiceTools = {
   }),
 
   createInvoice: tool({
-    description: 'Create a new invoice for an existing customer. Requires either customer name OR customer ID. Will NOT create customers - customer must already exist in QuickBooks.',
+    description: 'Create a new invoice for an existing customer. Requires either customer name OR customer ID. Will NOT create customers - customer must already exist in QuickBooks. Uses smart defaults for amount ($500), description ("Professional Services"), and due date (1 month from today) when not specified.',
     parameters: z.object({
       customerName: z.string().optional().describe('Customer name (must exist in QuickBooks)'),
       customerId: z.string().optional().describe('Specific QuickBooks customer ID (must exist in QuickBooks)'),

@@ -74,6 +74,11 @@ TOOL SELECTION RULES:
   * Words like "delete", "remove", "erase": Use operation="delete" (permanently removes)
   * Only when specifically asked to "void": Use operation="void" (marks as $0)
 - For creation requests: Use createInvoice tool
+  * ALWAYS auto-create invoices using smart defaults unless user explicitly asks for custom details
+  * For simple requests like "create invoice for [customer]": Use defaults ($500, "Professional Services", 1 month due date)
+  * Only ask for details if user specifically mentions custom amounts, descriptions, or dates
+  * Example: "create invoice for Mark Cho" → auto-create with defaults immediately
+  * Example: "create invoice for Mark Cho for $1000" → use specified amount, default description/date
 
 CRITICAL RESPONSE RULES:
 - When tools return a 'summary' field, use ONLY that summary text as your response
@@ -225,6 +230,11 @@ TOOL SELECTION RULES:
   * Words like "delete", "remove", "erase": Use operation="delete" (permanently removes)
   * Only when specifically asked to "void": Use operation="void" (marks as $0)
 - For creation requests: Use createInvoice tool
+  * ALWAYS auto-create invoices using smart defaults unless user explicitly asks for custom details
+  * For simple requests like "create invoice for [customer]": Use defaults ($500, "Professional Services", 1 month due date)
+  * Only ask for details if user specifically mentions custom amounts, descriptions, or dates
+  * Example: "create invoice for Mark Cho" → auto-create with defaults immediately
+  * Example: "create invoice for Mark Cho for $1000" → use specified amount, default description/date
 
 CRITICAL RESPONSE RULES:
 - When tools return a 'summary' field, use ONLY that summary text as your response
